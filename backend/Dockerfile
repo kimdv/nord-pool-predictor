@@ -2,6 +2,9 @@ FROM python:3.14-slim AS builder
 
 WORKDIR /app
 
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 COPY pyproject.toml ./
 COPY src/ ./src/
 COPY areas.yaml ./
@@ -21,8 +24,8 @@ RUN groupadd --gid 1000 appuser \
 
 WORKDIR /app
 
-COPY --from=builder /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
-COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 COPY --from=builder /app .
 
 RUN mkdir -p /data/models && chown -R appuser:appuser /data/models
