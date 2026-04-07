@@ -3,11 +3,12 @@ FROM python:3.11-slim AS builder
 WORKDIR /app
 
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+COPY src/ ./src/
+COPY areas.yaml ./
+COPY migrations/ ./migrations/
 
-COPY . .
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir ".[dev]"
 
 FROM python:3.11-slim AS runtime
 
