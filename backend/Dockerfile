@@ -8,7 +8,7 @@ COPY areas.yaml ./
 COPY migrations/ ./migrations/
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir ".[dev]"
+    && pip install --no-cache-dir "."
 
 FROM python:3.14-slim AS runtime
 
