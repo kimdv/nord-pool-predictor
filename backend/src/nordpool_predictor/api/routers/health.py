@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/health", tags=["health"])
 
 _STALENESS_THRESHOLDS: dict[str, timedelta] = {
     "prices": timedelta(hours=26),
-    "weather": timedelta(hours=12),
+    "weather": timedelta(hours=26),
     "production": timedelta(hours=26),
     "crossborder": timedelta(hours=26),
 }
