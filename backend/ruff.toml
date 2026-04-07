@@ -1,8 +1,0 @@
-target-version = "py314"
-line-length = 99
-
-[lint]
-select = ["E", "F", "I", "N", "W", "UP"]
-
-[lint.per-file-ignores]
-"src/nordpool_predictor/ml/*.py" = ["N803", "N806"]
