@@ -66,11 +66,16 @@ function buildCombinedData(
 export function useAreaData(area: AreaCode) {
   const [data, setData] = useState<AreaDetailData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [prevArea, setPrevArea] = useState(area);
+
+  if (area !== prevArea) {
+    setPrevArea(area);
+    setLoading(true);
+    setData(null);
+  }
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setData(null);
 
     const now = new Date();
     const start = new Date(now.getTime() - 48 * 3600_000).toISOString();

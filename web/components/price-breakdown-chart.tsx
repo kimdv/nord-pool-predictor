@@ -53,15 +53,19 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
   const [data, setData] = useState<SlotBreakdown[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [disabled, setDisabled] = useState<Set<CategoryKey>>(new Set());
+  const [prevKey, setPrevKey] = useState<string | null>(null);
+
+  const currentKey = gln && code ? `${area}:${gln}:${code}` : null;
+  if (currentKey !== prevKey) {
+    setPrevKey(currentKey);
+    setData(null);
+    setLoading(currentKey !== null);
+  }
 
   useEffect(() => {
-    if (!gln || !code) {
-      setData(null);
-      return;
-    }
+    if (!gln || !code) return;
 
     let cancelled = false;
-    setLoading(true);
 
     fetch(
       `/api/backend/tariffs/breakdown/${area}?gln=${encodeURIComponent(gln)}&code=${encodeURIComponent(code)}`,
@@ -211,13 +215,16 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
                 return (
                   <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-md text-[13px]">
                     <p className="font-medium text-gray-800 mb-1">{label}</p>
-                    {payload.map((p) => (
-                      <p key={p.dataKey as string} style={{ color: p.color }}>
-                        {CATEGORIES.find((c) => c.key === p.dataKey)?.label ?? p.dataKey}
-                        {" : "}
-                        {((p.value as number) ?? 0).toFixed(4)} DKK/kWh
-                      </p>
-                    ))}
+                    {payload.map((p) => {
+                      const key = String(p.dataKey ?? "");
+                      return (
+                        <p key={key} style={{ color: p.color }}>
+                          {CATEGORIES.find((c) => c.key === key)?.label ?? key}
+                          {" : "}
+                          {(Number(p.value) || 0).toFixed(4)} DKK/kWh
+                        </p>
+                      );
+                    })}
                     <p className="mt-1 pt-1 border-t border-gray-100 font-semibold text-gray-900">
                       I alt : {total.toFixed(4)} DKK/kWh
                     </p>

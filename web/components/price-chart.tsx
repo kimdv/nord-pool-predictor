@@ -104,16 +104,14 @@ export default function PriceChart({
                 color: "#374151",
                 fontSize: 13,
               }}
-              formatter={(
-                value: number | [number, number],
-                name: string,
-              ) => {
+              formatter={(value, name) => {
                 if (Array.isArray(value))
                   return [
-                    `${value[0].toFixed(4)} – ${value[1].toFixed(4)} DKK/kWh`,
+                    `${Number(value[0]).toFixed(4)} – ${Number(value[1]).toFixed(4)} DKK/kWh`,
                     name,
                   ];
-                return [value.toFixed(4) + " DKK/kWh", name];
+                if (value == null) return ["—", name];
+                return [Number(value).toFixed(4) + " DKK/kWh", name];
               }}
             />
             <Legend
