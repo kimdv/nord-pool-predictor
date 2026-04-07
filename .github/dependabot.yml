@@ -5,39 +5,24 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-    labels:
-      - dependencies
-      - python
 
   - package-ecosystem: npm
     directory: /web
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-    labels:
-      - dependencies
-      - javascript
 
   - package-ecosystem: docker
     directory: /backend
     schedule:
       interval: weekly
-    labels:
-      - dependencies
-      - docker
 
   - package-ecosystem: docker
     directory: /web
     schedule:
       interval: weekly
-    labels:
-      - dependencies
-      - docker
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    labels:
-      - dependencies
-      - ci
