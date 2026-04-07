@@ -1,0 +1,39 @@
+areas:
+  DK1:
+    label: Vest
+    weather_points:
+      - id: DK1_AARHUS
+        name: Aarhus
+        lat: 56.15
+        lon: 10.21
+      - id: DK1_AALBORG
+        name: Aalborg
+        lat: 57.05
+        lon: 9.92
+      - id: DK1_ESBJERG
+        name: Esbjerg
+        lat: 55.47
+        lon: 8.45
+      - id: DK1_ODENSE
+        name: Odense
+        lat: 55.40
+        lon: 10.39
+  DK2:
+    label: Øst
+    weather_points:
+      - id: DK2_COPENHAGEN
+        name: Copenhagen
+        lat: 55.68
+        lon: 12.57
+      - id: DK2_NYKOBING
+        name: Nykobing Falster
+        lat: 54.77
+        lon: 11.87
+      - id: DK2_RODBYHAVN
+        name: Rodbyhavn
+        lat: 54.65
+        lon: 11.35
+      - id: DK2_RONNE
+        name: Ronne
+        lat: 55.10
+        lon: 14.70

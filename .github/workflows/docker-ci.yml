@@ -1,0 +1,20 @@
+name: Docker CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t nordpool-predictor-app:ci ./backend
+
+      - name: Build web image
+        run: docker build -t nordpool-predictor-web:ci ./web
