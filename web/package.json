@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "^15.5.14",
+    "next": "^16.2.2",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "recharts": "^2.12.0"
