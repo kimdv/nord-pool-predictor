@@ -29,12 +29,14 @@ def _parse_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if raw_ts is None or price_mwh is None or area_code is None:
             continue
         ts = datetime.fromisoformat(str(raw_ts)).replace(tzinfo=UTC)
-        rows.append({
-            "area": area_code,
-            "ts": ts,
-            "price_dkk_kwh": float(price_mwh) / 1000.0,
-            "source": SOURCE,
-        })
+        rows.append(
+            {
+                "area": area_code,
+                "ts": ts,
+                "price_dkk_kwh": float(price_mwh) / 1000.0,
+                "source": SOURCE,
+            }
+        )
     return rows
 
 
@@ -57,14 +59,17 @@ async def _fetch_chunk(
     chunk_end: datetime,
     areas: list[str],
 ) -> list[dict[str, Any]]:
-    records = await eds_get(DATASET, {
-        "start": chunk_start.strftime("%Y-%m-%dT%H:%M"),
-        "end": chunk_end.strftime("%Y-%m-%dT%H:%M"),
-        "filter": json.dumps({"PriceArea": areas}),
-        "columns": COLUMNS,
-        "sort": "TimeUTC asc",
-        "limit": "0",
-    })
+    records = await eds_get(
+        DATASET,
+        {
+            "start": chunk_start.strftime("%Y-%m-%dT%H:%M"),
+            "end": chunk_end.strftime("%Y-%m-%dT%H:%M"),
+            "filter": json.dumps({"PriceArea": areas}),
+            "columns": COLUMNS,
+            "sort": "TimeUTC asc",
+            "limit": "0",
+        },
+    )
     return _parse_rows(records)
 
 
@@ -110,7 +115,9 @@ async def backfill_prices(days: int = 365) -> None:
         total += count
         logger.info(
             "Backfill prices %s→%s: %d rows",
-            chunk_start.date(), chunk_end.date(), count,
+            chunk_start.date(),
+            chunk_end.date(),
+            count,
         )
         chunk_start = chunk_end
 

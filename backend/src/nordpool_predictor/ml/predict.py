@@ -41,7 +41,11 @@ def _load_models(
     # "20260406" (old) or "20260406-134500" (new).  Extract everything
     # after the area prefix.
     prefix = f"lgbm-{area}-"
-    time_str = model_version[len(prefix):] if model_version.startswith(prefix) else model_version.rsplit("-", 1)[-1]
+    time_str = (
+        model_version[len(prefix) :]
+        if model_version.startswith(prefix)
+        else model_version.rsplit("-", 1)[-1]
+    )
     models: dict[str, object] = {}
     for q in ("p10", "p50", "p90"):
         path = Path(artifact_path) / f"lgbm-{area}-{q}-{time_str}.joblib"
@@ -136,9 +140,12 @@ async def run_forecast(area: str, horizon_steps: int = 672) -> str:
         await session.execute(
             text(
                 "INSERT INTO forecast_runs "
-                "  (run_id, area, model_version, issued_at, horizon_steps, status) "
+                "  (run_id, area, model_version, issued_at,"
+                "   horizon_steps, status) "
                 "VALUES "
-                "  (CAST(:run_id AS uuid), :area, :model_version, :issued_at, :horizon_steps, 'running')"
+                "  (CAST(:run_id AS uuid), :area,"
+                "   :model_version, :issued_at,"
+                "   :horizon_steps, 'running')"
             ),
             {
                 "run_id": run_id,
@@ -153,8 +160,12 @@ async def run_forecast(area: str, horizon_steps: int = 672) -> str:
     try:
         # 4. Build features (sync DB work -- run in thread) ------------------
         import asyncio
+
         X, target_ts = await asyncio.to_thread(
-            _build_forecast_features, area, now, horizon_steps,
+            _build_forecast_features,
+            area,
+            now,
+            horizon_steps,
         )
 
         expected_features: list[str] = models["p50"].feature_name_  # type: ignore[union-attr]

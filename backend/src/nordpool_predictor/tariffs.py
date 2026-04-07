@@ -38,6 +38,7 @@ def _cache_get(key: str) -> Any | None:
 def _cache_set(key: str, value: Any) -> None:
     _tariff_cache[key] = (time.monotonic(), value)
 
+
 DATAHUB_DATASET = "DatahubPricelist"
 
 # Global Location Number (GLN) for Energinet, the Danish TSO.
@@ -77,14 +78,18 @@ async def fetch_grid_companies() -> list[dict[str, str]]:
     if cached is not None:
         return cached
 
-    records = await eds_get(DATAHUB_DATASET, {
-        "start": "StartOfMonth-P6M",
-        "end": "now",
-        "filter": '{"ChargeType":["D03"]}',
-        "columns": "ChargeOwner,GLN_Number",
-        "sort": "ChargeOwner ASC",
-        "limit": "0",
-    }, respect_rate_limit=False)
+    records = await eds_get(
+        DATAHUB_DATASET,
+        {
+            "start": "StartOfMonth-P6M",
+            "end": "now",
+            "filter": '{"ChargeType":["D03"]}',
+            "columns": "ChargeOwner,GLN_Number",
+            "sort": "ChargeOwner ASC",
+            "limit": "0",
+        },
+        respect_rate_limit=False,
+    )
 
     seen: dict[str, str] = {}
     for r in records:
@@ -107,14 +112,18 @@ async def fetch_grid_tariff_codes(gln: str) -> list[dict[str, str]]:
     if cached is not None:
         return cached
 
-    records = await eds_get(DATAHUB_DATASET, {
-        "end": "now",
-        "start": "StartOfMonth-P6M",
-        "filter": f'{{"GLN_Number":["{gln}"],"ChargeType":["D03"]}}',
-        "columns": "ChargeTypeCode,Note,Description",
-        "sort": "ValidFrom DESC",
-        "limit": "200",
-    }, respect_rate_limit=False)
+    records = await eds_get(
+        DATAHUB_DATASET,
+        {
+            "end": "now",
+            "start": "StartOfMonth-P6M",
+            "filter": f'{{"GLN_Number":["{gln}"],"ChargeType":["D03"]}}',
+            "columns": "ChargeTypeCode,Note,Description",
+            "sort": "ValidFrom DESC",
+            "limit": "200",
+        },
+        respect_rate_limit=False,
+    )
 
     seen: dict[str, dict[str, str]] = {}
     for r in records:
@@ -141,12 +150,16 @@ async def _fetch_latest_tariff(
     if cached is not None:
         return cached
 
-    records = await eds_get(DATAHUB_DATASET, {
-        "end": "now",
-        "filter": f'{{"GLN_Number":["{gln}"],"ChargeTypeCode":["{charge_type_code}"]}}',
-        "sort": "ValidFrom DESC",
-        "limit": "1",
-    }, respect_rate_limit=False)
+    records = await eds_get(
+        DATAHUB_DATASET,
+        {
+            "end": "now",
+            "filter": f'{{"GLN_Number":["{gln}"],"ChargeTypeCode":["{charge_type_code}"]}}',
+            "sort": "ValidFrom DESC",
+            "limit": "1",
+        },
+        respect_rate_limit=False,
+    )
     if not records:
         return [0.0] * 24
     result = _extract_hourly_prices(records[0])
@@ -160,9 +173,7 @@ async def _fetch_flat_tariff(code: str, fallback: float) -> float:
     api_value = prices[0] if prices else 0.0
     if api_value != 0.0:
         return api_value
-    logger.warning(
-        "Using fallback for Energinet %s: %.4f DKK/kWh", code, fallback
-    )
+    logger.warning("Using fallback for Energinet %s: %.4f DKK/kWh", code, fallback)
     return fallback
 
 
@@ -183,14 +194,12 @@ async def build_price_breakdown(
     ``spot_prices`` maps ISO timestamp string -> DKK/kWh (excl. VAT).
     Tariffs from Energinet are hourly and repeat across the 4 quarter-hour
     slots within each hour.  All returned values are DKK/kWh."""
-    grid_tariff, nettab, system_tariff, transmission_tariff, elafgift = (
-        await asyncio.gather(
-            _fetch_latest_tariff(gln, charge_type_code),
-            _fetch_nettab_tariff(area),
-            _fetch_flat_tariff(SYSTEM_TARIFF_CODE, _FALLBACK_SYSTEM_TARIFF),
-            _fetch_flat_tariff(TRANSMISSION_TARIFF_CODE, _FALLBACK_TRANSMISSION_TARIFF),
-            _fetch_flat_tariff(ELAFGIFT_CODE, _FALLBACK_ELAFGIFT),
-        )
+    grid_tariff, nettab, system_tariff, transmission_tariff, elafgift = await asyncio.gather(
+        _fetch_latest_tariff(gln, charge_type_code),
+        _fetch_nettab_tariff(area),
+        _fetch_flat_tariff(SYSTEM_TARIFF_CODE, _FALLBACK_SYSTEM_TARIFF),
+        _fetch_flat_tariff(TRANSMISSION_TARIFF_CODE, _FALLBACK_TRANSMISSION_TARIFF),
+        _fetch_flat_tariff(ELAFGIFT_CODE, _FALLBACK_ELAFGIFT),
     )
 
     now = datetime.now(UTC)
@@ -209,19 +218,21 @@ async def build_price_breakdown(
         total_ex_vat = spot + grid + transport + elafgift
         vat = total_ex_vat * VAT_RATE
 
-        slots.append({
-            "hour": hour_index,
-            "minute": ts.minute,
-            "ts": ts_key,
-            "spot_price": round(spot, 6),
-            "grid_tariff": round(grid, 6),
-            "system_tariff": round(system_tariff, 6),
-            "transmission_tariff": round(transmission_tariff, 6),
-            "grid_loss_tariff": round(loss, 6),
-            "electricity_tax": round(elafgift, 6),
-            "total_ex_vat": round(total_ex_vat, 6),
-            "vat": round(vat, 6),
-            "total_incl_vat": round(total_ex_vat + vat, 6),
-        })
+        slots.append(
+            {
+                "hour": hour_index,
+                "minute": ts.minute,
+                "ts": ts_key,
+                "spot_price": round(spot, 6),
+                "grid_tariff": round(grid, 6),
+                "system_tariff": round(system_tariff, 6),
+                "transmission_tariff": round(transmission_tariff, 6),
+                "grid_loss_tariff": round(loss, 6),
+                "electricity_tax": round(elafgift, 6),
+                "total_ex_vat": round(total_ex_vat, 6),
+                "vat": round(vat, 6),
+                "total_incl_vat": round(total_ex_vat + vat, 6),
+            }
+        )
 
     return slots

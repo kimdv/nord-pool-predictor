@@ -54,9 +54,7 @@ async def _enforce_rate_limit(dataset: str) -> None:
         elapsed = time.monotonic() - last
         if elapsed < 60.0:
             wait = 60.0 - elapsed + 1.0
-            logger.info(
-                "Rate-limit: waiting %.0fs before next %s request", wait, dataset
-            )
+            logger.info("Rate-limit: waiting %.0fs before next %s request", wait, dataset)
             await asyncio.sleep(wait)
         _last_request_by_dataset[dataset] = time.monotonic()
 
@@ -107,7 +105,8 @@ async def _request_with_retry(
             if exc.response.status_code == 429:
                 logger.warning(
                     "Rate limited (429) on %s, waiting %.0fs",
-                    dataset, RATE_LIMIT_WAIT,
+                    dataset,
+                    RATE_LIMIT_WAIT,
                 )
                 await asyncio.sleep(RATE_LIMIT_WAIT)
                 _last_request_by_dataset[dataset] = time.monotonic()
@@ -115,26 +114,38 @@ async def _request_with_retry(
             if attempt == MAX_RETRIES:
                 logger.error(
                     "Request to %s failed after %d attempts: %s",
-                    dataset, MAX_RETRIES, exc,
+                    dataset,
+                    MAX_RETRIES,
+                    exc,
                 )
                 raise
-            delay = BACKOFF_BASE ** attempt
+            delay = BACKOFF_BASE**attempt
             logger.warning(
                 "%s attempt %d/%d failed (%s), retrying in %.1fs",
-                dataset, attempt, MAX_RETRIES, exc, delay,
+                dataset,
+                attempt,
+                MAX_RETRIES,
+                exc,
+                delay,
             )
             await asyncio.sleep(delay)
         except httpx.TransportError as exc:
             if attempt == MAX_RETRIES:
                 logger.error(
                     "Request to %s failed after %d attempts: %s",
-                    dataset, MAX_RETRIES, exc,
+                    dataset,
+                    MAX_RETRIES,
+                    exc,
                 )
                 raise
-            delay = BACKOFF_BASE ** attempt
+            delay = BACKOFF_BASE**attempt
             logger.warning(
                 "%s attempt %d/%d failed (%s), retrying in %.1fs",
-                dataset, attempt, MAX_RETRIES, exc, delay,
+                dataset,
+                attempt,
+                MAX_RETRIES,
+                exc,
+                delay,
             )
             await asyncio.sleep(delay)
     return []

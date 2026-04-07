@@ -17,7 +17,8 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-from nordpool_predictor.api.routers import (
+from nordpool_predictor import bootstrap_state  # noqa: E402
+from nordpool_predictor.api.routers import (  # noqa: E402
     areas,
     forecasts,
     health,
@@ -27,10 +28,9 @@ from nordpool_predictor.api.routers import (
     prices,
     tariffs,
 )
-from nordpool_predictor import bootstrap_state
-from nordpool_predictor.config import get_settings
-from nordpool_predictor.database import dispose_engine, run_migrations
-from nordpool_predictor.scheduler.jobs import start_scheduler, stop_scheduler
+from nordpool_predictor.config import get_settings  # noqa: E402
+from nordpool_predictor.database import dispose_engine, run_migrations  # noqa: E402
+from nordpool_predictor.scheduler.jobs import start_scheduler, stop_scheduler  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -83,36 +83,57 @@ async def _bootstrap() -> None:
         production_gap = await _days_since_latest(session, "production_observations")
         crossborder_gap = await _days_since_latest(session, "crossborder_observations")
 
-    prices_days = target_days if prices_gap is None else min(prices_gap + 1, target_days)
-    weather_days = target_days if weather_gap is None else min(weather_gap + 1, target_days)
-    production_days = target_days if production_gap is None else min(production_gap + 1, target_days)
-    crossborder_days = target_days if crossborder_gap is None else min(crossborder_gap + 1, target_days)
+    def _days(gap: int | None) -> int:
+        return target_days if gap is None else min(gap + 1, target_days)
+
+    prices_days = _days(prices_gap)
+    weather_days = _days(weather_gap)
+    production_days = _days(production_gap)
+    crossborder_days = _days(crossborder_gap)
 
     if prices_days > 0:
-        logger.info("Bootstrap step 1/6: Backfilling %d days of prices (gap: %s days)", prices_days, prices_gap)
+        logger.info(
+            "Bootstrap 1/6: Backfilling %d days of prices (gap: %s)",
+            prices_days,
+            prices_gap,
+        )
         await backfill_prices(days=prices_days)
     else:
-        logger.info("Bootstrap step 1/6: Prices up to date — skipping")
+        logger.info("Bootstrap 1/6: Prices up to date — skipping")
 
     if weather_days > 0:
-        logger.info("Bootstrap step 2/6: Backfilling %d days of weather (gap: %s days)", weather_days, weather_gap)
+        logger.info(
+            "Bootstrap 2/6: Backfilling %d days of weather (gap: %s)",
+            weather_days,
+            weather_gap,
+        )
         await backfill_weather(days=weather_days)
     else:
-        logger.info("Bootstrap step 2/6: Weather up to date — skipping")
+        logger.info("Bootstrap 2/6: Weather up to date — skipping")
 
     if production_days > 0:
-        logger.info("Bootstrap step 3/6: Backfilling %d days of production (gap: %s days)", production_days, production_gap)
+        logger.info(
+            "Bootstrap 3/6: Backfilling %d days of production (gap: %s)",
+            production_days,
+            production_gap,
+        )
         await backfill_production(days=production_days)
     else:
-        logger.info("Bootstrap step 3/6: Production up to date — skipping")
+        logger.info("Bootstrap 3/6: Production up to date — skipping")
 
-    from nordpool_predictor.ingestion.production import ingest_production_forecasts
+    from nordpool_predictor.ingestion.production import (
+        ingest_production_forecasts,
+    )
 
-    logger.info("Bootstrap step 3b/6: Fetching latest Energinet production forecasts")
+    logger.info("Bootstrap 3b/6: Fetching Energinet production forecasts")
     await ingest_production_forecasts()
 
     if crossborder_days > 0:
-        logger.info("Bootstrap step 4/6: Backfilling %d days of crossborder (gap: %s days)", crossborder_days, crossborder_gap)
+        logger.info(
+            "Bootstrap 4/6: Backfilling %d days of crossborder (gap: %s)",
+            crossborder_days,
+            crossborder_gap,
+        )
         await backfill_crossborder(days=crossborder_days)
     else:
         logger.info("Bootstrap step 4/6: Crossborder up to date — skipping")
@@ -120,14 +141,18 @@ async def _bootstrap() -> None:
     for i, area in enumerate(areas, 1):
         logger.info(
             "Bootstrap step 5/6: Training models for %s (%d/%d areas)",
-            area, i, len(areas),
+            area,
+            i,
+            len(areas),
         )
         await train_models(area)
 
     for i, area in enumerate(areas, 1):
         logger.info(
             "Bootstrap step 6/6: Running initial forecast for %s (%d/%d areas)",
-            area, i, len(areas),
+            area,
+            i,
+            len(areas),
         )
         await run_forecast(area)
 

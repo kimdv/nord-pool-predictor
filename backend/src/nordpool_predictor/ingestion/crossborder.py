@@ -53,13 +53,15 @@ def _parse_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             flow = rec.get(col_name)
             if flow is None:
                 continue
-            rows.append({
-                "connection": connection,
-                "ts": ts,
-                "flow_mw": float(flow),
-                "capacity_mw": None,
-                "source": SOURCE,
-            })
+            rows.append(
+                {
+                    "connection": connection,
+                    "ts": ts,
+                    "flow_mw": float(flow),
+                    "capacity_mw": None,
+                    "source": SOURCE,
+                }
+            )
     return rows
 
 
@@ -85,14 +87,17 @@ async def ingest_crossborder_flows(days: int = 7) -> None:
 
     logger.info("Ingesting crossborder flows for last %d days", days)
 
-    records = await eds_get(DATASET, {
-        "start": start.strftime("%Y-%m-%dT%H:%M"),
-        "end": now.strftime("%Y-%m-%dT%H:%M"),
-        "filter": AREA_FILTER,
-        "columns": ALL_COLUMNS,
-        "sort": "TimeUTC asc",
-        "limit": "0",
-    })
+    records = await eds_get(
+        DATASET,
+        {
+            "start": start.strftime("%Y-%m-%dT%H:%M"),
+            "end": now.strftime("%Y-%m-%dT%H:%M"),
+            "filter": AREA_FILTER,
+            "columns": ALL_COLUMNS,
+            "sort": "TimeUTC asc",
+            "limit": "0",
+        },
+    )
 
     if not records:
         logger.warning("No crossborder flow records returned")
@@ -115,21 +120,26 @@ async def backfill_crossborder(days: int = 365) -> None:
     while chunk_start < end:
         chunk_end = min(chunk_start + timedelta(days=90), end)
 
-        records = await eds_get(DATASET, {
-            "start": chunk_start.strftime("%Y-%m-%dT%H:%M"),
-            "end": chunk_end.strftime("%Y-%m-%dT%H:%M"),
-            "filter": AREA_FILTER,
-            "columns": ALL_COLUMNS,
-            "sort": "TimeUTC asc",
-            "limit": "0",
-        })
+        records = await eds_get(
+            DATASET,
+            {
+                "start": chunk_start.strftime("%Y-%m-%dT%H:%M"),
+                "end": chunk_end.strftime("%Y-%m-%dT%H:%M"),
+                "filter": AREA_FILTER,
+                "columns": ALL_COLUMNS,
+                "sort": "TimeUTC asc",
+                "limit": "0",
+            },
+        )
 
         rows = _parse_records(records)
         count = await _upsert_flows(rows)
         total += count
         logger.info(
             "Backfill crossborder %s→%s: %d rows",
-            chunk_start.date(), chunk_end.date(), count,
+            chunk_start.date(),
+            chunk_end.date(),
+            count,
         )
         chunk_start = chunk_end
 

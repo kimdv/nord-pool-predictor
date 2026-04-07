@@ -201,9 +201,7 @@ class TestEdsClient:
         mock_response.json.return_value = {"records": [{"ok": True}]}
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            side_effect=[httpx.TransportError("timeout"), mock_response]
-        )
+        mock_client.get = AsyncMock(side_effect=[httpx.TransportError("timeout"), mock_response])
 
         from nordpool_predictor.ingestion.eds_client import _request_with_retry
 

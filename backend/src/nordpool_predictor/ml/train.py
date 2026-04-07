@@ -75,8 +75,14 @@ def _objective(
 # ---------------------------------------------------------------------------
 
 
-def _train_sync(area: str, settings_training_window_days: int, model_dir_str: str) -> tuple[
-    str, str, dict, dict[str, lgb.LGBMRegressor], datetime,
+def _train_sync(
+    area: str, settings_training_window_days: int, model_dir_str: str
+) -> tuple[
+    str,
+    str,
+    dict,
+    dict[str, lgb.LGBMRegressor],
+    datetime,
 ]:
     """CPU-bound training work; runs in a thread to avoid blocking the event loop."""
     now = datetime.now(UTC)
@@ -109,7 +115,10 @@ def _train_sync(area: str, settings_training_window_days: int, model_dir_str: st
                 best = float("nan")
             logger.info(
                 "Optuna %s: trial %d/%d — best MAE so far: %.4f",
-                area, trial.number + 1, N_OPTUNA_TRIALS, best,
+                area,
+                trial.number + 1,
+                N_OPTUNA_TRIALS,
+                best,
             )
 
     study.optimize(
@@ -182,7 +191,10 @@ async def train_models(area: str) -> str:
     settings = get_settings()
 
     model_version, artifact_path, metrics, _models, now = await asyncio.to_thread(
-        _train_sync, area, settings.training_window_days, settings.model_dir,
+        _train_sync,
+        area,
+        settings.training_window_days,
+        settings.model_dir,
     )
 
     async with get_session() as session:
@@ -196,11 +208,15 @@ async def train_models(area: str) -> str:
         await session.execute(
             text(
                 "INSERT INTO model_versions "
-                "  (model_version, model_type, area, horizon_strategy, "
-                "   feature_set_version, trained_at, metrics_json, artifact_path, is_active) "
+                "  (model_version, model_type, area,"
+                "   horizon_strategy, feature_set_version,"
+                "   trained_at, metrics_json,"
+                "   artifact_path, is_active) "
                 "VALUES "
-                "  (:model_version, :model_type, :area, :horizon_strategy, "
-                "   :feature_set_version, :trained_at, CAST(:metrics_json AS jsonb), :artifact_path, TRUE)"
+                "  (:model_version, :model_type, :area,"
+                "   :horizon_strategy, :feature_set_version,"
+                "   :trained_at, CAST(:metrics_json AS jsonb),"
+                "   :artifact_path, TRUE)"
             ),
             {
                 "model_version": model_version,

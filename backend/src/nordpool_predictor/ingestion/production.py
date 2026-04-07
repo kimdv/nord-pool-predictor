@@ -18,11 +18,7 @@ FORECASTS_DATASET = "Forecasts_Hour"
 SOURCE_ACTUALS = "energidataservice_actual"
 SOURCE_FORECAST = "energidataservice_forecast"
 
-ACTUAL_COLUMNS = (
-    "Minutes5UTC,Minutes5DK,"
-    "OffshoreWindPower,OnshoreWindPower,"
-    "SolarPower,PriceArea"
-)
+ACTUAL_COLUMNS = "Minutes5UTC,Minutes5DK,OffshoreWindPower,OnshoreWindPower,SolarPower,PriceArea"
 FORECAST_COLUMNS = "HourUTC,PriceArea,ForecastDayAhead"
 
 
@@ -37,13 +33,15 @@ def _parse_actual_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]
         offshore = float(rec.get("OffshoreWindPower") or 0)
         onshore = float(rec.get("OnshoreWindPower") or 0)
         solar = float(rec.get("SolarPower") or 0)
-        rows.append({
-            "area": area_code,
-            "ts": ts,
-            "wind_mw": offshore + onshore,
-            "solar_mw": solar,
-            "source": SOURCE_ACTUALS,
-        })
+        rows.append(
+            {
+                "area": area_code,
+                "ts": ts,
+                "wind_mw": offshore + onshore,
+                "solar_mw": solar,
+                "source": SOURCE_ACTUALS,
+            }
+        )
     return rows
 
 
@@ -56,13 +54,15 @@ def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any
             continue
         ts = datetime.fromisoformat(str(raw_ts)).replace(tzinfo=UTC)
         wind_fc = rec.get("ForecastDayAhead")
-        rows.append({
-            "area": area_code,
-            "ts": ts,
-            "wind_mw": float(wind_fc) if wind_fc is not None else None,
-            "solar_mw": None,
-            "source": SOURCE_FORECAST,
-        })
+        rows.append(
+            {
+                "area": area_code,
+                "ts": ts,
+                "wind_mw": float(wind_fc) if wind_fc is not None else None,
+                "solar_mw": None,
+                "source": SOURCE_FORECAST,
+            }
+        )
     return rows
 
 
@@ -106,14 +106,17 @@ async def ingest_production_actuals(days: int = 7) -> None:
 
     logger.info("Ingesting production actuals for %d days, areas %s", days, areas)
 
-    records = await eds_get(ACTUALS_DATASET, {
-        "start": start.strftime("%Y-%m-%dT%H:%M"),
-        "end": now.strftime("%Y-%m-%dT%H:%M"),
-        "filter": json.dumps({"PriceArea": areas}),
-        "columns": ACTUAL_COLUMNS,
-        "sort": "Minutes5UTC asc",
-        "limit": "0",
-    })
+    records = await eds_get(
+        ACTUALS_DATASET,
+        {
+            "start": start.strftime("%Y-%m-%dT%H:%M"),
+            "end": now.strftime("%Y-%m-%dT%H:%M"),
+            "filter": json.dumps({"PriceArea": areas}),
+            "columns": ACTUAL_COLUMNS,
+            "sort": "Minutes5UTC asc",
+            "limit": "0",
+        },
+    )
 
     if not records:
         logger.warning("No actual production records returned")
@@ -135,14 +138,17 @@ async def ingest_production_forecasts() -> None:
 
     logger.info("Ingesting production forecasts for areas %s (%s → %s)", areas, today, end)
 
-    records = await eds_get(FORECASTS_DATASET, {
-        "start": today.strftime("%Y-%m-%dT%H:%M"),
-        "end": end.strftime("%Y-%m-%dT%H:%M"),
-        "filter": json.dumps({"PriceArea": areas}),
-        "columns": FORECAST_COLUMNS,
-        "sort": "HourUTC asc",
-        "limit": "0",
-    })
+    records = await eds_get(
+        FORECASTS_DATASET,
+        {
+            "start": today.strftime("%Y-%m-%dT%H:%M"),
+            "end": end.strftime("%Y-%m-%dT%H:%M"),
+            "filter": json.dumps({"PriceArea": areas}),
+            "columns": FORECAST_COLUMNS,
+            "sort": "HourUTC asc",
+            "limit": "0",
+        },
+    )
 
     if not records:
         logger.warning("No production forecast records returned")
@@ -168,21 +174,26 @@ async def backfill_production(days: int = 365) -> None:
     while chunk_start < end:
         chunk_end = min(chunk_start + timedelta(days=30), end)
 
-        records = await eds_get(ACTUALS_DATASET, {
-            "start": chunk_start.strftime("%Y-%m-%dT%H:%M"),
-            "end": chunk_end.strftime("%Y-%m-%dT%H:%M"),
-            "filter": json.dumps({"PriceArea": areas}),
-            "columns": ACTUAL_COLUMNS,
-            "sort": "Minutes5UTC asc",
-            "limit": "0",
-        })
+        records = await eds_get(
+            ACTUALS_DATASET,
+            {
+                "start": chunk_start.strftime("%Y-%m-%dT%H:%M"),
+                "end": chunk_end.strftime("%Y-%m-%dT%H:%M"),
+                "filter": json.dumps({"PriceArea": areas}),
+                "columns": ACTUAL_COLUMNS,
+                "sort": "Minutes5UTC asc",
+                "limit": "0",
+            },
+        )
 
         rows = _parse_actual_records(records)
         count = await _upsert_observations(rows)
         total += count
         logger.info(
             "Backfill production %s→%s: %d rows",
-            chunk_start.date(), chunk_end.date(), count,
+            chunk_start.date(),
+            chunk_end.date(),
+            count,
         )
         chunk_start = chunk_end
 
