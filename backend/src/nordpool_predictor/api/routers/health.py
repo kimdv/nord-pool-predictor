@@ -22,7 +22,7 @@ _STALENESS_THRESHOLDS: dict[str, timedelta] = {
 
 _SOURCE_QUERIES: dict[str, str] = {
     "prices": "SELECT MAX(created_at) AS last_updated FROM price_observations",
-    "weather": "SELECT MAX(created_at) AS last_updated FROM weather_observations",
+    "weather": "SELECT MAX(created_at) AS last_updated FROM weather_forecasts",
     "production": "SELECT MAX(created_at) AS last_updated FROM production_observations",
     "crossborder": "SELECT MAX(created_at) AS last_updated FROM crossborder_observations",
 }
