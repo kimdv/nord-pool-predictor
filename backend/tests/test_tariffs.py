@@ -42,11 +42,7 @@ def stub_tariffs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def _utc_of(date: str, hour: int, minute: int) -> str:
     """Return the UTC ISO key of a Copenhagen-local wall-clock instant."""
     y, m, d = (int(p) for p in date.split("-"))
-    return (
-        datetime(y, m, d, hour, minute, tzinfo=CPH)
-        .astimezone(UTC)
-        .isoformat()
-    )
+    return datetime(y, m, d, hour, minute, tzinfo=CPH).astimezone(UTC).isoformat()
 
 
 class TestBuildPriceBreakdown:
