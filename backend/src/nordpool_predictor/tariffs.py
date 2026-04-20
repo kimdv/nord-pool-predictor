@@ -14,9 +14,13 @@ import asyncio
 import logging
 import time
 from datetime import UTC, datetime, timedelta
+from datetime import time as dtime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from nordpool_predictor.ingestion.eds_client import eds_get
+
+CPH_TZ = ZoneInfo("Europe/Copenhagen")
 
 logger = logging.getLogger(__name__)
 
@@ -189,11 +193,21 @@ async def build_price_breakdown(
     charge_type_code: str,
     spot_prices: dict[str, float],
 ) -> list[dict[str, Any]]:
-    """Build a 96-slot (15-min) price breakdown for today.
+    """Build a 15-minute price breakdown covering today's Copenhagen calendar day.
 
-    ``spot_prices`` maps ISO timestamp string -> DKK/kWh (excl. VAT).
-    Tariffs from Energinet are hourly and repeat across the 4 quarter-hour
-    slots within each hour.  All returned values are DKK/kWh."""
+    ``spot_prices`` maps ISO timestamp string -> DKK/kWh (excl. VAT), keyed by
+    the slot's UTC timestamp in ISO 8601.  Iteration is done in UTC between
+    two Copenhagen-local-midnight anchors, so the number of slots matches the
+    actual length of the Danish local day:
+
+    * 96 slots on normal days
+    * 92 slots on the spring-forward day (23-hour day)
+    * 100 slots on the fall-back day (25-hour day)
+
+    Tariffs from Energinet are hourly and indexed by the slot's Copenhagen
+    local hour (so a tariff valid from 18:00-19:00 local time applies to all
+    four quarter-hour slots regardless of the underlying UTC offset).  All
+    returned values are DKK/kWh."""
     grid_tariff, nettab, system_tariff, transmission_tariff, elafgift = await asyncio.gather(
         _fetch_latest_tariff(gln, charge_type_code),
         _fetch_nettab_tariff(area),
@@ -202,14 +216,19 @@ async def build_price_breakdown(
         _fetch_flat_tariff(ELAFGIFT_CODE, _FALLBACK_ELAFGIFT),
     )
 
-    now = datetime.now(UTC)
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_date = datetime.now(CPH_TZ).date()
+    start_utc = datetime.combine(today_date, dtime.min, tzinfo=CPH_TZ).astimezone(UTC)
+    end_utc = datetime.combine(
+        today_date + timedelta(days=1), dtime.min, tzinfo=CPH_TZ
+    ).astimezone(UTC)
+    num_slots = int((end_utc - start_utc).total_seconds() // 900)
 
     slots: list[dict[str, Any]] = []
-    for slot in range(96):
-        ts = today + timedelta(minutes=slot * 15)
-        hour_index = slot // 4
-        ts_key = ts.isoformat()
+    for slot in range(num_slots):
+        ts_utc = start_utc + timedelta(minutes=slot * 15)
+        ts_local = ts_utc.astimezone(CPH_TZ)
+        hour_index = ts_local.hour
+        ts_key = ts_utc.isoformat()
         spot = spot_prices.get(ts_key, 0.0)
         grid = grid_tariff[hour_index]
         loss = nettab[hour_index]
@@ -220,8 +239,8 @@ async def build_price_breakdown(
 
         slots.append(
             {
-                "hour": hour_index,
-                "minute": ts.minute,
+                "hour": ts_local.hour,
+                "minute": ts_local.minute,
                 "ts": ts_key,
                 "spot_price": round(spot, 6),
                 "grid_tariff": round(grid, 6),

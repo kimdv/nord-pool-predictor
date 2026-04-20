@@ -80,6 +80,23 @@ export interface HealthResponse {
   bootstrapping: boolean;
 }
 
+export interface JobRun {
+  job_id: string;
+  job_type: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface JobSummary {
+  job_type: string;
+  last_status: string;
+  last_started_at: string | null;
+  last_finished_at: string | null;
+  batch_size: number;
+  failures_in_batch: number;
+}
+
 export interface HAForecastEntry {
   start: string;
   price: number;

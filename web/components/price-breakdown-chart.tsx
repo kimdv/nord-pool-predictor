@@ -45,8 +45,17 @@ const CATEGORIES = [
 
 type CategoryKey = (typeof CATEGORIES)[number]["key"];
 
-function formatSlot(h: number, m: number): string {
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+const SLOT_FORMATTER = new Intl.DateTimeFormat("da-DK", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: "Europe/Copenhagen",
+});
+
+function formatSlot(ts: string): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return SLOT_FORMATTER.format(d);
 }
 
 export default function PriceBreakdownChart({ area, gln, code }: Props) {
@@ -107,7 +116,7 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
       const vat = disabled.has("vat") ? 0 : subtotal * 0.25;
 
       return {
-        slot: formatSlot(s.hour, s.minute),
+        slot: formatSlot(s.ts),
         spot_price: spot,
         grid_tariff: grid,
         transport,

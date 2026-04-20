@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from datetime import time as dtime
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
@@ -16,6 +17,7 @@ from nordpool_predictor.api.schemas.tariffs import (
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
 from nordpool_predictor.tariffs import (
+    CPH_TZ,
     build_price_breakdown,
     fetch_grid_companies,
     fetch_grid_tariff_codes,
@@ -74,9 +76,11 @@ async def price_breakdown(
     if area not in settings.area_codes:
         raise HTTPException(status_code=404, detail=f"Unknown area: {area}")
 
-    now = datetime.now(UTC)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = today_start + timedelta(days=1)
+    today_date = datetime.now(CPH_TZ).date()
+    today_local = datetime.combine(today_date, dtime.min, tzinfo=CPH_TZ)
+    tomorrow_local = datetime.combine(today_date + timedelta(days=1), dtime.min, tzinfo=CPH_TZ)
+    today_start = today_local.astimezone(UTC)
+    today_end = tomorrow_local.astimezone(UTC)
 
     async with get_session() as session:
         result = await session.execute(

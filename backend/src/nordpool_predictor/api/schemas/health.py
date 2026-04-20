@@ -33,6 +33,24 @@ class JobRunResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+class JobSummary(BaseModel):
+    """Aggregated view of the most recent "batch" of a job type.
+
+    Several jobs (e.g. ``refresh_forecast``, ``retrain_model``) are fanned out
+    across all configured areas and create one ``job_runs`` row per area.  A
+    summary collapses those rows into a single status by looking at every row
+    started within a short window of the latest run for that job type."""
+
+    model_config = {"from_attributes": True}
+
+    job_type: str
+    last_status: str
+    last_started_at: datetime | None = None
+    last_finished_at: datetime | None = None
+    batch_size: int = 0
+    failures_in_batch: int = 0
+
+
 class AreaResponse(BaseModel):
     model_config = {"from_attributes": True}
 

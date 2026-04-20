@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { SourceStatus, ForecastResponse } from "@/lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { JobSummary, SourceStatus, ForecastResponse } from "@/lib/api";
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "Ingen data";
@@ -47,45 +47,7 @@ const EXTRA_JOBS: { key: string; label: string; description: string }[] = [
   },
 ];
 
-function RefreshButton({
-  jobKey,
-  running,
-  feedback,
-  onTrigger,
-}: {
-  jobKey: string;
-  running: boolean;
-  feedback: string;
-  onTrigger: (key: string) => void;
-}) {
-  return (
-    <button
-      onClick={() => onTrigger(jobKey)}
-      disabled={running}
-      className={`ml-auto inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium transition-all ${
-        running
-          ? "border-blue-200 bg-blue-50 text-blue-400 cursor-wait"
-          : feedback === "Startet"
-            ? "border-emerald-200 bg-emerald-50 text-emerald-600"
-            : feedback
-              ? "border-red-200 bg-red-50 text-red-500"
-              : "border-gray-200 text-gray-400 hover:border-blue-300 hover:text-blue-600"
-      }`}
-      title={`Hent ${jobKey}`}
-    >
-      {running ? (
-        <span className="inline-block h-3 w-3 rounded-full border-2 border-blue-300 border-t-transparent animate-spin" />
-      ) : (
-        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-      )}
-      {feedback && <span>{feedback}</span>}
-    </button>
-  );
-}
-
-const FORECAST_STATUS_LABELS: Record<string, string> = {
+const STATUS_LABELS: Record<string, string> = {
   completed: "Færdig",
   scored: "Scoret",
   running: "Kører",
@@ -93,13 +55,69 @@ const FORECAST_STATUS_LABELS: Record<string, string> = {
   failed: "Fejlet",
 };
 
-const FORECAST_STATUS_COLORS: Record<string, string> = {
+const STATUS_DOT_CLASS: Record<string, string> = {
   completed: "bg-emerald-500",
   scored: "bg-emerald-500",
   running: "bg-amber-400 animate-pulse",
   pending: "bg-gray-400",
   failed: "bg-red-500",
 };
+
+const TRIGGERED_POLL_MS = 5000;
+const FEEDBACK_CLEAR_MS = 10000;
+
+type FeedbackState = { kind: "idle" | "ok" | "error"; text: string };
+
+const IDLE_FEEDBACK: FeedbackState = { kind: "idle", text: "" };
+
+function RefreshButton({
+  jobKey,
+  busy,
+  feedback,
+  onTrigger,
+}: {
+  jobKey: string;
+  busy: boolean;
+  feedback: FeedbackState;
+  onTrigger: (key: string) => void;
+}) {
+  const cls =
+    busy
+      ? "border-blue-200 bg-blue-50 text-blue-400 cursor-wait"
+      : feedback.kind === "ok"
+        ? "border-emerald-200 bg-emerald-50 text-emerald-600"
+        : feedback.kind === "error"
+          ? "border-red-200 bg-red-50 text-red-500"
+          : "border-gray-200 text-gray-400 hover:border-blue-300 hover:text-blue-600";
+
+  return (
+    <button
+      onClick={() => onTrigger(jobKey)}
+      disabled={busy}
+      className={`ml-auto inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium transition-all ${cls}`}
+      title={`Hent ${jobKey}`}
+    >
+      {busy ? (
+        <span className="inline-block h-3 w-3 rounded-full border-2 border-blue-300 border-t-transparent animate-spin" />
+      ) : (
+        <svg
+          className="h-3 w-3"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+          />
+        </svg>
+      )}
+      {feedback.text && <span>{feedback.text}</span>}
+    </button>
+  );
+}
 
 export default function JobStatus({
   sources: initialSources,
@@ -109,67 +127,131 @@ export default function JobStatus({
   forecast?: ForecastResponse | null;
 }) {
   const [sources, setSources] = useState(initialSources);
-  const [running, setRunning] = useState<Set<string>>(new Set());
-  const [feedback, setFeedback] = useState<Record<string, string>>({});
+  const [triggering, setTriggering] = useState<Set<string>>(new Set());
+  const [feedback, setFeedback] = useState<Record<string, FeedbackState>>({});
+  const [summaries, setSummaries] = useState<Record<string, JobSummary>>({});
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const feedbackTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const fetchAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setSources(initialSources);
   }, [initialSources]);
 
-  const refreshSources = useCallback(async () => {
+  const refreshSources = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/backend/health");
-      if (res.ok) {
-        const data = await res.json();
-        if (data.sources) setSources(data.sources);
-      }
-    } catch { /* ignore */ }
-  }, []);
-
-  const startPolling = useCallback(() => {
-    if (pollRef.current) return;
-    pollRef.current = setInterval(refreshSources, 5000);
-  }, [refreshSources]);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => () => stopPolling(), [stopPolling]);
-
-  const trigger = useCallback(async (key: string) => {
-    setRunning((prev) => new Set(prev).add(key));
-    setFeedback((prev) => ({ ...prev, [key]: "" }));
-
-    try {
-      const res = await fetch(`/api/backend/jobs/trigger/${key}`, {
-        method: "POST",
-      });
+      const res = await fetch("/api/backend/health", { signal });
+      if (!res.ok) return;
       const data = await res.json();
-      setFeedback((prev) => ({
-        ...prev,
-        [key]: res.ok ? "Startet" : (data.detail ?? "Fejl"),
-      }));
-      if (res.ok) startPolling();
-    } catch {
-      setFeedback((prev) => ({ ...prev, [key]: "Fejl" }));
+      if (data.sources) setSources(data.sources);
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        console.warn("Failed to refresh sources", err);
+      }
     }
+  }, []);
 
-    setTimeout(() => {
-      setRunning((prev) => {
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-      setFeedback((prev) => ({ ...prev, [key]: "" }));
-      refreshSources();
-      stopPolling();
-    }, 10000);
-  }, [startPolling, stopPolling, refreshSources]);
+  const refreshSummaries = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await fetch("/api/backend/jobs/summary", { signal });
+      if (!res.ok) return;
+      const rows: JobSummary[] = await res.json();
+      const map: Record<string, JobSummary> = {};
+      for (const row of rows) map[row.job_type] = row;
+      setSummaries(map);
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        console.warn("Failed to refresh job summaries", err);
+      }
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    fetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
+    await Promise.all([
+      refreshSources(controller.signal),
+      refreshSummaries(controller.signal),
+    ]);
+  }, [refreshSources, refreshSummaries]);
+
+  useEffect(() => {
+    refreshSummaries();
+    return () => {
+      fetchAbortRef.current?.abort();
+      const timers = feedbackTimersRef.current;
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, [refreshSummaries]);
+
+  const anyRunning = useMemo(() => {
+    if (triggering.size > 0) return true;
+    return Object.values(summaries).some((s) => s.last_status === "running");
+  }, [triggering, summaries]);
+
+  useEffect(() => {
+    if (!anyRunning) {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+      return;
+    }
+    if (pollRef.current) return;
+    pollRef.current = setInterval(refreshAll, TRIGGERED_POLL_MS);
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [anyRunning, refreshAll]);
+
+  const scheduleFeedbackClear = useCallback((key: string) => {
+    const prev = feedbackTimersRef.current[key];
+    if (prev) clearTimeout(prev);
+    feedbackTimersRef.current[key] = setTimeout(() => {
+      setFeedback((state) => ({ ...state, [key]: IDLE_FEEDBACK }));
+      delete feedbackTimersRef.current[key];
+    }, FEEDBACK_CLEAR_MS);
+  }, []);
+
+  const trigger = useCallback(
+    async (key: string) => {
+      setTriggering((prev) => new Set(prev).add(key));
+      setFeedback((prev) => ({ ...prev, [key]: IDLE_FEEDBACK }));
+
+      try {
+        const res = await fetch(`/api/backend/jobs/trigger/${key}`, {
+          method: "POST",
+        });
+        const data = await res.json().catch(() => ({}));
+        setFeedback((prev) => ({
+          ...prev,
+          [key]: res.ok
+            ? { kind: "ok", text: "Startet" }
+            : { kind: "error", text: data.detail ?? "Fejl" },
+        }));
+      } catch (err) {
+        console.warn(`Failed to trigger job ${key}`, err);
+        setFeedback((prev) => ({
+          ...prev,
+          [key]: { kind: "error", text: "Fejl" },
+        }));
+      } finally {
+        setTriggering((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+        await refreshAll();
+        scheduleFeedbackClear(key);
+      }
+    },
+    [refreshAll, scheduleFeedbackClear],
+  );
 
   return (
     <div className="card p-6">
@@ -178,6 +260,10 @@ export default function JobStatus({
         {sources.map((s) => {
           const label = SOURCE_LABELS[s.source] ?? s.source.replace(/_/g, " ");
           const jobKey = SOURCE_JOBS[s.source];
+          const summary = jobKey ? summaries[jobKey] : undefined;
+          const busy = jobKey
+            ? triggering.has(jobKey) || summary?.last_status === "running"
+            : false;
           return (
             <div key={s.source} className="flex items-center gap-2.5 text-sm py-1">
               <span
@@ -186,9 +272,7 @@ export default function JobStatus({
                 }`}
               />
               <span className="font-medium text-gray-700">{label}</span>
-              <span className="text-gray-400 text-xs">
-                {formatDate(s.last_updated)}
-              </span>
+              <span className="text-gray-400 text-xs">{formatDate(s.last_updated)}</span>
               {s.is_stale && (
                 <span className="rounded-full bg-red-50 border border-red-200 px-2 py-0.5 text-xs font-medium text-red-600">
                   Forældet
@@ -197,22 +281,23 @@ export default function JobStatus({
               {jobKey && (
                 <RefreshButton
                   jobKey={jobKey}
-                  running={running.has(jobKey)}
-                  feedback={feedback[jobKey] ?? ""}
+                  busy={busy}
+                  feedback={feedback[jobKey] ?? IDLE_FEEDBACK}
                   onTrigger={trigger}
                 />
               )}
             </div>
           );
         })}
-
       </div>
 
       {forecast && (
         <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
           <div className="flex items-center gap-1.5">
             <span className="text-gray-400">Model</span>
-            <span className="font-medium text-gray-700 text-xs">{forecast.model_version}</span>
+            <span className="font-medium text-gray-700 text-xs">
+              {forecast.model_version}
+            </span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-gray-400">Udgivet</span>
@@ -223,55 +308,98 @@ export default function JobStatus({
           <div className="flex items-center gap-1.5">
             <span className="text-gray-400">Status</span>
             <span className="inline-flex items-center gap-1 font-medium text-gray-700 text-xs">
-              <span className={`inline-block h-2 w-2 rounded-full ${FORECAST_STATUS_COLORS[forecast.status] ?? "bg-gray-400"}`} />
-              {FORECAST_STATUS_LABELS[forecast.status] ?? forecast.status}
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${
+                  STATUS_DOT_CLASS[forecast.status] ?? "bg-gray-400"
+                }`}
+              />
+              {STATUS_LABELS[forecast.status] ?? forecast.status}
             </span>
           </div>
         </div>
       )}
 
-      <div className="mt-4 pt-3 border-t border-gray-100 flex flex-wrap gap-2">
+      <div className="mt-3 pt-3 border-t border-gray-100 space-y-1.5">
         {EXTRA_JOBS.map((job) => {
-          const isRunning = running.has(job.key);
-          const msg = feedback[job.key];
+          const summary = summaries[job.key];
+          const triggered = triggering.has(job.key);
+          const status = summary?.last_status;
+          const isRunning = triggered || status === "running";
+          const isFailed = !isRunning && status === "failed";
+          const isCompleted = !isRunning && status === "completed";
+          const lastTs =
+            summary?.last_finished_at ?? summary?.last_started_at ?? null;
+
+          const dotClass = isRunning
+            ? "bg-amber-400 animate-pulse"
+            : isFailed
+              ? "bg-red-500"
+              : isCompleted
+                ? "bg-emerald-500"
+                : "bg-gray-300";
+
           return (
-            <button
+            <div
               key={job.key}
-              onClick={() => trigger(job.key)}
-              disabled={isRunning}
-              title={job.description}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-all ${
-                isRunning
-                  ? "border-blue-200 bg-blue-50 text-blue-500 cursor-wait"
-                  : "border-gray-200 bg-white text-gray-600 hover:border-blue-300 hover:text-blue-600"
-              }`}
+              className="flex items-center gap-2.5 text-sm py-1"
             >
+              <span
+                className={`inline-block h-2 w-2 rounded-full shrink-0 ${dotClass}`}
+              />
+              <span
+                className="font-medium text-gray-700"
+                title={job.description}
+              >
+                {job.label}
+              </span>
+              <span className="text-gray-400 text-xs">
+                {summary ? formatDate(lastTs) : "Ingen kørsler"}
+              </span>
               {isRunning && (
-                <span className="inline-block h-3 w-3 rounded-full border-2 border-blue-300 border-t-transparent animate-spin" />
-              )}
-              {job.label}
-              <svg className="h-3.5 w-3.5 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {msg && (
-                <span className={`text-xs ${msg === "Startet" ? "text-emerald-500" : "text-red-500"}`}>
-                  · {msg}
+                <span className="rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-xs font-medium text-amber-600">
+                  {STATUS_LABELS.running}
                 </span>
               )}
-            </button>
+              {isFailed && summary && summary.batch_size > 1 ? (
+                <span className="rounded-full bg-red-50 border border-red-200 px-2 py-0.5 text-xs font-medium text-red-600">
+                  {`${STATUS_LABELS.failed} (${summary.failures_in_batch}/${summary.batch_size})`}
+                </span>
+              ) : isFailed ? (
+                <span className="rounded-full bg-red-50 border border-red-200 px-2 py-0.5 text-xs font-medium text-red-600">
+                  {STATUS_LABELS.failed}
+                </span>
+              ) : null}
+              <RefreshButton
+                jobKey={job.key}
+                busy={isRunning}
+                feedback={feedback[job.key] ?? IDLE_FEEDBACK}
+                onTrigger={trigger}
+              />
+            </div>
           );
         })}
       </div>
 
       <p className="mt-4 pt-3 border-t border-gray-100 text-xs text-gray-400">
         Spotpriser, vind/sol-prognoser og tariffer fra{" "}
-        <a href="https://www.energidataservice.dk" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-600">
+        <a
+          href="https://www.energidataservice.dk"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline hover:text-gray-600"
+        >
           Energi Data Service
         </a>{" "}
         (Energinet). Vejrdata fra{" "}
-        <a href="https://open-meteo.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-600">
+        <a
+          href="https://open-meteo.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline hover:text-gray-600"
+        >
           Open-Meteo
-        </a>.
+        </a>
+        .
       </p>
     </div>
   );
