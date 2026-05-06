@@ -189,6 +189,11 @@ async def train_models(area: str) -> str:
     import asyncio
 
     settings = get_settings()
+    logger.info(
+        "Starting training for %s (window=%d days)",
+        area,
+        settings.training_window_days,
+    )
 
     model_version, artifact_path, metrics, _models, now = await asyncio.to_thread(
         _train_sync,
@@ -197,39 +202,43 @@ async def train_models(area: str) -> str:
         settings.model_dir,
     )
 
-    async with get_session() as session:
-        await session.execute(
-            text(
-                "UPDATE model_versions SET is_active = FALSE "
-                "WHERE area = :area AND is_active = TRUE"
-            ),
-            {"area": area},
-        )
-        await session.execute(
-            text(
-                "INSERT INTO model_versions "
-                "  (model_version, model_type, area,"
-                "   horizon_strategy, feature_set_version,"
-                "   trained_at, metrics_json,"
-                "   artifact_path, is_active) "
-                "VALUES "
-                "  (:model_version, :model_type, :area,"
-                "   :horizon_strategy, :feature_set_version,"
-                "   :trained_at, CAST(:metrics_json AS jsonb),"
-                "   :artifact_path, TRUE)"
-            ),
-            {
-                "model_version": model_version,
-                "model_type": "lgbm_quantile",
-                "area": area,
-                "horizon_strategy": "direct",
-                "feature_set_version": "v1",
-                "trained_at": now,
-                "metrics_json": json.dumps(metrics),
-                "artifact_path": artifact_path,
-            },
-        )
-        await session.commit()
+    try:
+        async with get_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE model_versions SET is_active = FALSE "
+                    "WHERE area = :area AND is_active = TRUE"
+                ),
+                {"area": area},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO model_versions "
+                    "  (model_version, model_type, area,"
+                    "   horizon_strategy, feature_set_version,"
+                    "   trained_at, metrics_json,"
+                    "   artifact_path, is_active) "
+                    "VALUES "
+                    "  (:model_version, :model_type, :area,"
+                    "   :horizon_strategy, :feature_set_version,"
+                    "   :trained_at, CAST(:metrics_json AS jsonb),"
+                    "   :artifact_path, TRUE)"
+                ),
+                {
+                    "model_version": model_version,
+                    "model_type": "lgbm_quantile",
+                    "area": area,
+                    "horizon_strategy": "direct",
+                    "feature_set_version": "v1",
+                    "trained_at": now,
+                    "metrics_json": json.dumps(metrics),
+                    "artifact_path": artifact_path,
+                },
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("Failed to register model %s for %s", model_version, area)
+        raise
 
     logger.info(
         "Registered %s — MAE=%.4f  RMSE=%.4f  bias=%.4f",

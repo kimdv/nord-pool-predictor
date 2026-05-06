@@ -108,6 +108,7 @@ def _build_forecast_features(
 
 async def run_forecast(area: str, horizon_steps: int = 672) -> str:
     """Produce a price forecast for *area* and return the ``run_id``."""
+    logger.info("Starting forecast for %s (horizon_steps=%d)", area, horizon_steps)
     now = datetime.now(UTC)
     now = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
 
@@ -129,6 +130,7 @@ async def run_forecast(area: str, horizon_steps: int = 672) -> str:
 
     model_version: str = row[0]
     artifact_path: str = row[1]
+    logger.info("Active model for %s: %s", area, model_version)
 
     # 2. Load quantile models ------------------------------------------------
     models = _load_models(model_version, artifact_path, area)
@@ -166,6 +168,12 @@ async def run_forecast(area: str, horizon_steps: int = 672) -> str:
             area,
             now,
             horizon_steps,
+        )
+        logger.info(
+            "Built feature matrix for %s: %d rows × %d cols",
+            area,
+            len(X),
+            X.shape[1],
         )
 
         expected_features: list[str] = models["p50"].feature_name_  # type: ignore[union-attr]
@@ -216,6 +224,8 @@ async def run_forecast(area: str, horizon_steps: int = 672) -> str:
                 {"run_id": run_id, "notes": notes},
             )
             await session.commit()
+
+        logger.info("Persisted %d forecast rows for run %s", len(forecast_rows), run_id)
 
         logger.info(
             "Forecast %s complete: %d steps for %s (model=%s%s)",

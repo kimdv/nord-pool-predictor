@@ -24,23 +24,31 @@ async def _log_job(
     details: dict[str, Any] | None = None,
 ) -> str:
     job_id = str(uuid.uuid4())
-    async with get_session() as session:
-        await session.execute(
-            text(
-                "INSERT INTO job_runs "
-                "(job_id, job_type, status, started_at, details_json) "
-                "VALUES (CAST(:job_id AS uuid), :job_type, :status, "
-                ":started_at, CAST(:details AS jsonb))"
-            ),
-            {
-                "job_id": job_id,
-                "job_type": job_type,
-                "status": status,
-                "started_at": datetime.now(UTC),
-                "details": json.dumps(details or {}),
-            },
+    try:
+        async with get_session() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO job_runs "
+                    "(job_id, job_type, status, started_at, details_json) "
+                    "VALUES (CAST(:job_id AS uuid), :job_type, :status, "
+                    ":started_at, CAST(:details AS jsonb))"
+                ),
+                {
+                    "job_id": job_id,
+                    "job_type": job_type,
+                    "status": status,
+                    "started_at": datetime.now(UTC),
+                    "details": json.dumps(details or {}),
+                },
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "Failed to record job_runs start row for %s (id=%s)",
+            job_type,
+            job_id,
         )
-        await session.commit()
+        raise
     return job_id
 
 
@@ -49,32 +57,49 @@ async def _finish_job(
     status: str,
     details: dict[str, Any] | None = None,
 ) -> None:
-    async with get_session() as session:
-        await session.execute(
-            text(
-                "UPDATE job_runs SET status = :status, "
-                "finished_at = :finished_at, "
-                "details_json = CAST(:details AS jsonb) "
-                "WHERE job_id = CAST(:job_id AS uuid)"
-            ),
-            {
-                "job_id": job_id,
-                "status": status,
-                "finished_at": datetime.now(UTC),
-                "details": json.dumps(details or {}),
-            },
+    try:
+        async with get_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE job_runs SET status = :status, "
+                    "finished_at = :finished_at, "
+                    "details_json = CAST(:details AS jsonb) "
+                    "WHERE job_id = CAST(:job_id AS uuid)"
+                ),
+                {
+                    "job_id": job_id,
+                    "status": status,
+                    "finished_at": datetime.now(UTC),
+                    "details": json.dumps(details or {}),
+                },
+            )
+            await session.commit()
+    except Exception:
+        # Don't let a logging-table failure mask the original job error.
+        logger.exception(
+            "Failed to update job_runs row id=%s to status=%s",
+            job_id,
+            status,
         )
-        await session.commit()
 
 
 async def _run_job(job_type: str, coro_fn: Any, *args: Any) -> None:
     job_id = await _log_job(job_type, "running")
+    args_repr = ", ".join(repr(a) for a in args) if args else ""
+    args_suffix = f", args=[{args_repr}]" if args_repr else ""
+    logger.info("Job %s starting (id=%s%s)", job_type, job_id, args_suffix)
     try:
         await coro_fn(*args)
         await _finish_job(job_id, "completed")
-        logger.info("Job %s completed (id=%s)", job_type, job_id)
+        logger.info("Job %s completed (id=%s%s)", job_type, job_id, args_suffix)
     except Exception as exc:
-        logger.exception("Job %s failed: %s", job_type, exc)
+        logger.exception(
+            "Job %s failed (id=%s%s): %s",
+            job_type,
+            job_id,
+            args_suffix,
+            exc,
+        )
         await _finish_job(job_id, "failed", {"error": str(exc)})
 
 
@@ -115,7 +140,9 @@ async def job_refresh_forecast() -> None:
     from nordpool_predictor.ml.predict import run_forecast
 
     settings = get_settings()
-    for area in settings.area_codes:
+    areas = settings.area_codes
+    for i, area in enumerate(areas, 1):
+        logger.info("Refreshing forecast for area %s (%d/%d)", area, i, len(areas))
         await _run_job("refresh_forecast", run_forecast, area)
 
 
@@ -129,7 +156,9 @@ async def job_retrain_model() -> None:
     from nordpool_predictor.ml.train import train_models
 
     settings = get_settings()
-    for area in settings.area_codes:
+    areas = settings.area_codes
+    for i, area in enumerate(areas, 1):
+        logger.info("Retraining model for area %s (%d/%d)", area, i, len(areas))
         await _run_job("retrain_model", train_models, area)
 
 

@@ -22,6 +22,8 @@ async def score_forecasts(area: str | None = None) -> None:
 
     If *area* is given, only runs for that area are scored.
     """
+    logger.info("Starting score_forecasts (area=%s)", area or "ALL")
+
     if area:
         query = text(
             "SELECT run_id, area, issued_at "
@@ -48,14 +50,29 @@ async def score_forecasts(area: str | None = None) -> None:
         return
 
     logger.info("Scoring %d forecast run(s)", len(runs))
+    scored = 0
+    skipped = 0
+    failed = 0
     for row in runs:
         run_id = str(row[0])
         run_area = str(row[1])
         issued_at = row[2]
         try:
-            await _score_single_run(run_id, run_area, issued_at)
+            outcome = await _score_single_run(run_id, run_area, issued_at)
+            if outcome == "scored":
+                scored += 1
+            else:
+                skipped += 1
         except Exception:
+            failed += 1
             logger.exception("Failed to score run %s", run_id)
+
+    logger.info(
+        "score_forecasts done: %d scored, %d skipped, %d failed",
+        scored,
+        skipped,
+        failed,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +84,12 @@ async def _score_single_run(
     run_id: str,
     area: str,
     issued_at: datetime,
-) -> None:
+) -> str:
+    """Score a single run.
+
+    Returns ``"scored"`` if metrics were written, ``"skipped"`` if the run was
+    intentionally not scored (missing data, low coverage, etc.).
+    """
     # -- Forecast values -----------------------------------------------------
     async with get_session() as session:
         result = await session.execute(
@@ -83,7 +105,7 @@ async def _score_single_run(
 
     if not fc_rows:
         logger.warning("No forecast values for run %s", run_id)
-        return
+        return "skipped"
 
     fc = pd.DataFrame(
         fc_rows,
@@ -106,14 +128,14 @@ async def _score_single_run(
 
     if not actual_rows:
         logger.info("No actuals available yet for run %s — skipping", run_id)
-        return
+        return "skipped"
 
     actuals = pd.DataFrame(actual_rows, columns=["ts", "actual"])
     merged = fc.merge(actuals, on="ts", how="inner")
 
     if merged.empty:
         logger.info("No matching actuals for run %s", run_id)
-        return
+        return "skipped"
 
     coverage = len(merged) / len(fc)
     if coverage < 0.5:
@@ -122,7 +144,7 @@ async def _score_single_run(
             run_id,
             coverage * 100,
         )
-        return
+        return "skipped"
 
     # -- Per-hour errors -----------------------------------------------------
     merged["abs_error"] = (merged["predicted"] - merged["actual"]).abs()
@@ -241,6 +263,7 @@ async def _score_single_run(
         quality,
         metrics.get("mae_24h") or 0.0,
     )
+    return "scored"
 
 
 # ---------------------------------------------------------------------------
