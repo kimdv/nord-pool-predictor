@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   ComposedChart,
   Area,
@@ -21,6 +22,8 @@ export default function PriceChart({
   data: CombinedPoint[];
   productionHorizon?: string | null;
 }) {
+  const [showUncertainty, setShowUncertainty] = useState(false);
+
   if (!data.length) {
     return (
       <div className="card p-6">
@@ -65,9 +68,21 @@ export default function PriceChart({
 
   return (
     <div className="card p-6">
-      <h2 className="text-lg font-semibold text-gray-900 mb-4">
-        Prisprognose
-      </h2>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+        <h2 className="text-lg font-semibold text-gray-900">Prisprognose</h2>
+        <button
+          type="button"
+          onClick={() => setShowUncertainty((v) => !v)}
+          aria-pressed={showUncertainty}
+          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all ${
+            showUncertainty
+              ? "border-transparent bg-emerald-600 text-white"
+              : "border-gray-200 text-gray-400 bg-white"
+          }`}
+        >
+          Usikkerhed
+        </button>
+      </div>
       <div className="h-80">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
@@ -147,14 +162,16 @@ export default function PriceChart({
                 }}
               />
             )}
-            <Area
-              type="monotone"
-              dataKey="band"
-              name="P10–P90 interval"
-              stroke="none"
-              fill="#059669"
-              fillOpacity={0.1}
-            />
+            {showUncertainty && (
+              <Area
+                type="monotone"
+                dataKey="band"
+                name="P10–P90 interval"
+                stroke="none"
+                fill="#059669"
+                fillOpacity={0.1}
+              />
+            )}
             <Line
               type="monotone"
               dataKey="actual"
