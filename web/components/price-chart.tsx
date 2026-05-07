@@ -50,6 +50,16 @@ export default function PriceChart({
 
   const lastActualIdx = formatted.findLastIndex((d) => d.actual != null);
   const cutoffLabel = lastActualIdx >= 0 ? formatted[lastActualIdx].label : null;
+  const nowMs = Date.now();
+  let nowLabel: string | null = null;
+  let bestNowDiff = Infinity;
+  for (const point of formatted) {
+    const diff = Math.abs(new Date(point.ts).getTime() - nowMs);
+    if (diff < bestNowDiff) {
+      bestNowDiff = diff;
+      nowLabel = point.label;
+    }
+  }
 
   let prodHorizonLabel: string | null = null;
   if (productionHorizon) {
@@ -134,6 +144,20 @@ export default function PriceChart({
               iconType="circle"
               iconSize={8}
             />
+            {nowLabel && nowLabel !== cutoffLabel && (
+              <ReferenceLine
+                x={nowLabel}
+                stroke="#d1d5db"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+                label={{
+                  value: "Nu",
+                  position: "insideTopRight",
+                  fill: "#9ca3af",
+                  fontSize: 11,
+                }}
+              />
+            )}
             {cutoffLabel && (
               <ReferenceLine
                 x={cutoffLabel}
@@ -141,7 +165,7 @@ export default function PriceChart({
                 strokeWidth={1}
                 strokeDasharray="4 3"
                 label={{
-                  value: "Nu",
+                  value: "Kendte priser ▸",
                   position: "insideTopRight",
                   fill: "#9ca3af",
                   fontSize: 11,

@@ -36,6 +36,14 @@ async function fetchJson<T>(url: string): Promise<T | null> {
   }
 }
 
+function endOfTomorrow(): string {
+  const end = new Date();
+  end.setDate(end.getDate() + 2);
+  end.setHours(0, 0, 0, 0);
+  end.setMilliseconds(-1);
+  return end.toISOString();
+}
+
 function buildCombinedData(
   prices: PricesResponse | null,
   forecast: ForecastResponse | null,
@@ -50,10 +58,12 @@ function buildCombinedData(
   if (forecast?.values) {
     for (const v of forecast.values) {
       const existing = map.get(v.ts) ?? { ts: v.ts };
-      existing.predicted = v.predicted_price_dkk_kwh;
-      existing.lower = v.lower_dkk_kwh;
-      existing.upper = v.upper_dkk_kwh;
-      existing.band = [v.lower_dkk_kwh, v.upper_dkk_kwh];
+      if (existing.actual == null) {
+        existing.predicted = v.predicted_price_dkk_kwh;
+        existing.lower = v.lower_dkk_kwh;
+        existing.upper = v.upper_dkk_kwh;
+        existing.band = [v.lower_dkk_kwh, v.upper_dkk_kwh];
+      }
       map.set(v.ts, existing);
     }
   }
@@ -79,7 +89,7 @@ export function useAreaData(area: AreaCode) {
 
     const now = new Date();
     const start = new Date(now.getTime() - 48 * 3600_000).toISOString();
-    const end = now.toISOString();
+    const end = endOfTomorrow();
 
     async function load() {
       const [prices, forecast, accuracy, benchmarks] = await Promise.all([
