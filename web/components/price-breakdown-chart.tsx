@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   Legend,
+  ReferenceLine,
   ResponsiveContainer,
 } from "recharts";
 import type { AreaCode } from "@/components/area-switcher";
@@ -51,6 +53,7 @@ const SLOT_FORMATTER = new Intl.DateTimeFormat("da-DK", {
   hourCycle: "h23",
   timeZone: "Europe/Copenhagen",
 });
+const SLOT_MS = 15 * 60 * 1000;
 
 function formatSlot(ts: string): string {
   const d = new Date(ts);
@@ -58,11 +61,28 @@ function formatSlot(ts: string): string {
   return SLOT_FORMATTER.format(d);
 }
 
+function getActiveSlotIndex(slots: SlotBreakdown[], nowMs: number): number {
+  for (let i = 0; i < slots.length; i++) {
+    const startMs = new Date(slots[i].ts).getTime();
+    if (Number.isNaN(startMs)) continue;
+
+    const nextMs =
+      i + 1 < slots.length ? new Date(slots[i + 1].ts).getTime() : NaN;
+    const endMs =
+      !Number.isNaN(nextMs) && nextMs > startMs ? nextMs : startMs + SLOT_MS;
+
+    if (nowMs >= startMs && nowMs < endMs) return i;
+  }
+
+  return -1;
+}
+
 export default function PriceBreakdownChart({ area, gln, code }: Props) {
   const [data, setData] = useState<SlotBreakdown[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [disabled, setDisabled] = useState<Set<CategoryKey>>(new Set());
   const [prevKey, setPrevKey] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const currentKey = gln && code ? `${area}:${gln}:${code}` : null;
   if (currentKey !== prevKey) {
@@ -94,6 +114,11 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
     };
   }, [area, gln, code]);
 
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
   const toggleCategory = useCallback((key: CategoryKey) => {
     setDisabled((prev) => {
       const next = new Set(prev);
@@ -103,9 +128,14 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
     });
   }, []);
 
+  const activeSlotIndex = useMemo(() => {
+    if (!data) return -1;
+    return getActiveSlotIndex(data, nowMs);
+  }, [data, nowMs]);
+
   const chartData = useMemo(() => {
     if (!data) return [];
-    return data.map((s) => {
+    return data.map((s, index) => {
       const spot = disabled.has("spot_price") ? 0 : s.spot_price;
       const grid = disabled.has("grid_tariff") ? 0 : s.grid_tariff;
       const transport = disabled.has("transport")
@@ -117,6 +147,7 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
 
       return {
         slot: formatSlot(s.ts),
+        isCurrent: index === activeSlotIndex,
         spot_price: spot,
         grid_tariff: grid,
         transport,
@@ -125,7 +156,8 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
         total: subtotal + vat,
       };
     });
-  }, [data, disabled]);
+  }, [activeSlotIndex, data, disabled]);
+  const activeSlot = chartData[activeSlotIndex]?.slot ?? null;
 
   if (!gln || !code) {
     return (
@@ -242,6 +274,20 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
               }}
             />
             <Legend content={() => null} />
+            {activeSlot && (
+              <ReferenceLine
+                x={activeSlot}
+                stroke="#111827"
+                strokeWidth={1.5}
+                label={{
+                  value: "Nu",
+                  position: "insideTop",
+                  fill: "#111827",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              />
+            )}
             {CATEGORIES.map((cat) => (
               <Bar
                 key={cat.key}
@@ -252,7 +298,17 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
                 radius={
                   cat.key === "vat" ? [2, 2, 0, 0] : undefined
                 }
-              />
+              >
+                {chartData.map((entry, index) => (
+                  <Cell
+                    key={`${cat.key}-${entry.slot}-${index}`}
+                    fill={cat.color}
+                    fillOpacity={entry.isCurrent ? 1 : 0.82}
+                    stroke={entry.isCurrent ? "#111827" : "transparent"}
+                    strokeWidth={entry.isCurrent ? 1.5 : 0}
+                  />
+                ))}
+              </Bar>
             ))}
           </BarChart>
         </ResponsiveContainer>
