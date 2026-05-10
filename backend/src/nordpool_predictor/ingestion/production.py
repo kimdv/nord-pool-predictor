@@ -19,7 +19,10 @@ SOURCE_ACTUALS = "energidataservice_actual"
 SOURCE_FORECAST = "energidataservice_forecast"
 
 ACTUAL_COLUMNS = "Minutes5UTC,Minutes5DK,OffshoreWindPower,OnshoreWindPower,SolarPower,PriceArea"
-FORECAST_COLUMNS = "HourUTC,PriceArea,ForecastDayAhead"
+FORECAST_COLUMNS = (
+    "HourUTC,PriceArea,ForecastType,ForecastCurrent,Forecast1Hour,"
+    "Forecast5Hour,ForecastIntraday,ForecastDayAhead,TimestampUTC"
+)
 
 
 def _parse_actual_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -45,25 +48,63 @@ def _parse_actual_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]
     return rows
 
 
+def _latest_forecast_value(rec: dict[str, Any]) -> float | None:
+    for key in (
+        "ForecastCurrent",
+        "Forecast1Hour",
+        "Forecast5Hour",
+        "ForecastIntraday",
+        "ForecastDayAhead",
+    ):
+        value = rec.get(key)
+        if value is not None:
+            return float(value)
+    return None
+
+
 def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+    grouped: dict[tuple[str, datetime], dict[str, Any]] = {}
     for rec in records:
         raw_ts = rec.get("HourUTC")
         area_code = rec.get("PriceArea")
         if raw_ts is None or area_code is None:
             continue
         ts = datetime.fromisoformat(str(raw_ts)).replace(tzinfo=UTC)
-        wind_fc = rec.get("ForecastDayAhead")
-        rows.append(
+        forecast_type = str(rec.get("ForecastType") or "").lower()
+        value = _latest_forecast_value(rec)
+        if value is None:
+            continue
+        if "wind" in forecast_type:
+            field = "wind_mw"
+        elif "solar" in forecast_type:
+            field = "solar_mw"
+        else:
+            continue
+
+        key = (area_code, ts)
+        row = grouped.setdefault(
+            key,
             {
                 "area": area_code,
                 "ts": ts,
-                "wind_mw": float(wind_fc) if wind_fc is not None else None,
+                "wind_mw": None,
                 "solar_mw": None,
                 "source": SOURCE_FORECAST,
-            }
+            },
         )
-    return rows
+        row[field] = (row[field] or 0.0) + value
+
+    return list(grouped.values())
+
+
+def _source_issued_at(records: list[dict[str, Any]], fallback: datetime) -> datetime:
+    timestamps = []
+    for rec in records:
+        raw_ts = rec.get("TimestampUTC")
+        if raw_ts is None:
+            continue
+        timestamps.append(datetime.fromisoformat(str(raw_ts)).replace(tzinfo=UTC))
+    return max(timestamps) if timestamps else fallback
 
 
 async def _upsert_observations(rows: list[dict[str, Any]]) -> int:
@@ -154,6 +195,7 @@ async def ingest_production_forecasts() -> None:
         logger.warning("No production forecast records returned")
         return
 
+    issued_at = _source_issued_at(records, issued_at)
     rows = _parse_forecast_records(records)
     count = await _upsert_forecasts(rows, issued_at)
     logger.info("Production forecast ingestion complete: %d rows", count)

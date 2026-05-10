@@ -102,9 +102,9 @@ All times are in CET/CEST (Europe/Copenhagen):
 |------|-----|-------------|
 | 13:15 | `ingest_prices` | Fetch tomorrow's day-ahead prices |
 | 13:20 | `ingest_weather` | Fetch latest weather forecasts for all zones |
-| 13:25 | `ingest_production` | Fetch wind/solar production forecasts |
-| 13:25 | `ingest_crossborder` | Fetch cross-border flow data |
-| 13:30 | `refresh_forecast` | Run ML prediction for next 48 hours |
+| 13:30 | `ingest_crossborder` | Fetch cross-border flow data |
+| 17:55 | `ingest_production` | Fetch wind/solar production forecasts |
+| 18:05 | `refresh_forecast` | Run ML prediction for next 7 days |
 | 06:00 | `score_forecasts` | Compare yesterday's predictions to actuals |
 | Sun 03:00 | `cleanup` | Trim old data beyond retention windows |
 | Sun 04:00 | `retrain_model` | Retrain models with Optuna hyperparameter tuning |

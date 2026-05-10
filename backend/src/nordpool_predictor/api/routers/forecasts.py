@@ -106,7 +106,25 @@ async def get_latest_forecast(area: str) -> ForecastRunResponse:
         values = [ForecastPoint.model_validate(v) for v in vals_result.mappings().all()]
 
         prod_horizon_result = await session.execute(
-            text("SELECT MAX(ts) AS max_ts FROM production_forecasts WHERE area = :area"),
+            text(
+                """
+                SELECT MAX(max_ts) AS max_ts
+                FROM (
+                    SELECT MAX(ts) AS max_ts
+                    FROM production_observations
+                    WHERE area = :area
+                    UNION ALL
+                    SELECT MAX(ts) AS max_ts
+                    FROM production_forecasts
+                    WHERE area = :area
+                      AND issued_at = (
+                          SELECT MAX(issued_at)
+                          FROM production_forecasts
+                          WHERE area = :area
+                      )
+                ) horizons
+                """
+            ),
             {"area": area},
         )
         prod_row = prod_horizon_result.mappings().first()

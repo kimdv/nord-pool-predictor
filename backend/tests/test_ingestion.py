@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from nordpool_predictor.ingestion.prices import _parse_rows
+from nordpool_predictor.ingestion.production import _parse_forecast_records, _source_issued_at
 from nordpool_predictor.ingestion.weather import _parse_hourly
 
 # ---------------------------------------------------------------------------
@@ -132,6 +133,77 @@ class TestWeatherParseHourly:
         assert rows[0]["cloud_cover_pct"] is None
         assert rows[0]["precipitation_mm"] is None
         assert rows[0]["solar_irradiance_wm2"] is None
+
+
+# ---------------------------------------------------------------------------
+# Production parsing
+# ---------------------------------------------------------------------------
+
+
+class TestProductionForecastParsing:
+    def test_forecast_types_aggregated_per_hour(self):
+        records = [
+            {
+                "HourUTC": "2026-05-11T21:00:00",
+                "PriceArea": "DK1",
+                "ForecastType": "Offshore Wind",
+                "ForecastCurrent": 10.0,
+                "ForecastDayAhead": 8.0,
+            },
+            {
+                "HourUTC": "2026-05-11T21:00:00",
+                "PriceArea": "DK1",
+                "ForecastType": "Onshore Wind",
+                "ForecastCurrent": 20.0,
+                "ForecastDayAhead": 18.0,
+            },
+            {
+                "HourUTC": "2026-05-11T21:00:00",
+                "PriceArea": "DK1",
+                "ForecastType": "Solar",
+                "ForecastCurrent": 5.0,
+                "ForecastDayAhead": 4.0,
+            },
+        ]
+
+        rows = _parse_forecast_records(records)
+
+        assert rows == [
+            {
+                "area": "DK1",
+                "ts": datetime(2026, 5, 11, 21, 0, tzinfo=UTC),
+                "wind_mw": 30.0,
+                "solar_mw": 5.0,
+                "source": "energidataservice_forecast",
+            }
+        ]
+
+    def test_forecast_parser_falls_back_to_day_ahead(self):
+        records = [
+            {
+                "HourUTC": "2026-05-11T21:00:00",
+                "PriceArea": "DK2",
+                "ForecastType": "Solar",
+                "ForecastCurrent": None,
+                "ForecastDayAhead": 7.5,
+            }
+        ]
+
+        rows = _parse_forecast_records(records)
+
+        assert rows[0]["wind_mw"] is None
+        assert rows[0]["solar_mw"] == 7.5
+
+    def test_source_issued_at_uses_latest_energinet_timestamp(self):
+        fallback = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
+        records = [
+            {"TimestampUTC": "2026-05-10T15:45:00"},
+            {"TimestampUTC": "2026-05-10T15:50:00"},
+        ]
+
+        issued_at = _source_issued_at(records, fallback)
+
+        assert issued_at == datetime(2026, 5, 10, 15, 50, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------

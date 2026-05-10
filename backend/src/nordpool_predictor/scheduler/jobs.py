@@ -217,7 +217,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     _scheduler.add_job(
         job_ingest_production,
-        cron(hour=13, minute=25, timezone=tz),
+        cron(hour=17, minute=55, timezone=tz),
         id="ingest_production",
     )
     _scheduler.add_job(
@@ -227,7 +227,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     _scheduler.add_job(
         job_refresh_forecast,
-        cron(hour=15, minute=0, timezone=tz),
+        cron(hour=18, minute=5, timezone=tz),
         id="refresh_forecast",
     )
     _scheduler.add_job(
