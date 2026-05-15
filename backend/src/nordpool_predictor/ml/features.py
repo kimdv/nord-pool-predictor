@@ -541,8 +541,7 @@ def apply_horizon_features(
     horizon_array = np.asarray(horizon_steps, dtype=np.int32)
     if len(horizon_array) != len(df):
         raise ValueError(
-            f"horizon_steps length {len(horizon_array)} does not match "
-            f"DataFrame length {len(df)}"
+            f"horizon_steps length {len(horizon_array)} does not match DataFrame length {len(df)}"
         )
 
     df = df.copy()
