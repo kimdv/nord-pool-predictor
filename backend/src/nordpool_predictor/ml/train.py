@@ -15,7 +15,11 @@ from sqlalchemy import text
 
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
-from nordpool_predictor.ml.features import TARGET, build_feature_matrix
+from nordpool_predictor.ml.features import (
+    TARGET,
+    apply_horizon_features,
+    build_feature_matrix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,8 @@ N_OPTUNA_TRIALS = 50
 N_CV_SPLITS = 5
 EARLY_STOPPING_ROUNDS = 50
 QUANTILES: dict[str, float] = {"p10": 0.1, "p50": 0.5, "p90": 0.9}
+# Maximum forecast horizon in 15-min steps (7 days × 96 steps/day).
+MAX_HORIZON_STEPS = 672
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +103,15 @@ def _train_sync(
     df = df.dropna(subset=[TARGET])
     if len(df) < 100:
         raise ValueError(f"Insufficient training samples for {area}: {len(df)}")
+
+    # Assign a random horizon_step in [1, 672] to each training row and mask
+    # lag features that wouldn't be observable at that horizon.  This teaches
+    # the model that long-horizon predictions don't have access to recent
+    # lags and prevents it from over-relying on near-term signal that vanishes
+    # at prediction time.  Seeded for reproducibility (area-dependent).
+    rng = np.random.default_rng(seed=abs(hash(area)) % (2**32))
+    horizon_steps = rng.integers(1, MAX_HORIZON_STEPS + 1, size=len(df), dtype=np.int32)
+    df = apply_horizon_features(df, horizon_steps)
 
     y = df[TARGET]
     X = df.drop(columns=[TARGET])

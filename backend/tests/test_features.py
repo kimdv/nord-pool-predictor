@@ -7,10 +7,13 @@ import pandas as pd
 import pytest
 
 from nordpool_predictor.ml.features import (
+    HORIZON_STEP_FEATURE,
+    LAG_HORIZON_LIMITS,
     TARGET,
     add_calendar_features,
     add_cross_features,
     add_price_lag_features,
+    apply_horizon_features,
 )
 
 
@@ -212,3 +215,89 @@ class TestAddCrossFeatures:
 
         assert "wind_x_hour_sin" not in result.columns
         assert "temp_x_is_weekend" not in result.columns
+
+
+# ---------------------------------------------------------------------------
+# Horizon-aware features
+# ---------------------------------------------------------------------------
+
+
+class TestApplyHorizonFeatures:
+    def test_adds_horizon_step_column(self):
+        idx = _quarter_index("2025-01-01", periods=4)
+        df = pd.DataFrame({TARGET: [1.0, 2.0, 3.0, 4.0]}, index=idx)
+        result = apply_horizon_features(df, [1, 2, 3, 4])
+
+        assert HORIZON_STEP_FEATURE in result.columns
+        assert result[HORIZON_STEP_FEATURE].tolist() == [1, 2, 3, 4]
+
+    def test_lag_24h_masked_beyond_24h_horizon(self):
+        idx = _quarter_index("2025-01-01", periods=3)
+        df = pd.DataFrame(
+            {
+                "price_lag_24h": [10.0, 20.0, 30.0],
+                "price_lag_48h": [10.0, 20.0, 30.0],
+                "price_lag_168h": [10.0, 20.0, 30.0],
+            },
+            index=idx,
+        )
+        # Horizons: 1 step (15min), 96 steps (24h), 97 steps (24h 15min).
+        result = apply_horizon_features(df, [1, 96, 97])
+
+        assert result["price_lag_24h"].iloc[0] == pytest.approx(10.0)
+        assert result["price_lag_24h"].iloc[1] == pytest.approx(20.0)
+        assert np.isnan(result["price_lag_24h"].iloc[2])
+
+    def test_lag_48h_masked_beyond_48h_horizon(self):
+        idx = _quarter_index("2025-01-01", periods=3)
+        df = pd.DataFrame({"price_lag_48h": [1.0, 2.0, 3.0]}, index=idx)
+        result = apply_horizon_features(df, [1, 192, 193])
+
+        assert result["price_lag_48h"].iloc[1] == pytest.approx(2.0)
+        assert np.isnan(result["price_lag_48h"].iloc[2])
+
+    def test_lag_168h_never_masked_within_7_days(self):
+        idx = _quarter_index("2025-01-01", periods=3)
+        df = pd.DataFrame({"price_lag_168h": [1.0, 2.0, 3.0]}, index=idx)
+        result = apply_horizon_features(df, [1, 336, 672])
+
+        assert not result["price_lag_168h"].isna().any()
+
+    def test_does_not_introduce_lag_columns_when_missing(self):
+        idx = _quarter_index("2025-01-01", periods=2)
+        df = pd.DataFrame({"unrelated": [1.0, 2.0]}, index=idx)
+        result = apply_horizon_features(df, [1, 2])
+
+        assert "price_lag_24h" not in result.columns
+        assert HORIZON_STEP_FEATURE in result.columns
+
+    def test_length_mismatch_raises(self):
+        idx = _quarter_index("2025-01-01", periods=3)
+        df = pd.DataFrame({TARGET: [1.0, 2.0, 3.0]}, index=idx)
+        with pytest.raises(ValueError):
+            apply_horizon_features(df, [1, 2])
+
+    def test_accepts_numpy_array_and_list(self):
+        idx = _quarter_index("2025-01-01", periods=2)
+        df = pd.DataFrame({TARGET: [1.0, 2.0]}, index=idx)
+
+        from_list = apply_horizon_features(df, [10, 20])
+        from_array = apply_horizon_features(df, np.array([10, 20]))
+
+        np.testing.assert_array_equal(
+            from_list[HORIZON_STEP_FEATURE].values,
+            from_array[HORIZON_STEP_FEATURE].values,
+        )
+
+    def test_does_not_mutate_input(self):
+        idx = _quarter_index("2025-01-01", periods=2)
+        df = pd.DataFrame({"price_lag_24h": [1.0, 2.0]}, index=idx)
+        original = df.copy()
+        apply_horizon_features(df, [1, 200])
+
+        pd.testing.assert_frame_equal(df, original)
+
+    def test_lag_horizon_limits_covers_known_columns(self):
+        assert "price_lag_24h" in LAG_HORIZON_LIMITS
+        assert "price_lag_48h" in LAG_HORIZON_LIMITS
+        assert "price_lag_168h" in LAG_HORIZON_LIMITS

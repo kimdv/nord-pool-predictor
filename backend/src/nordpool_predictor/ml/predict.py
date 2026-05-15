@@ -20,6 +20,7 @@ from nordpool_predictor.ml.features import (
     add_production_features,
     add_residual_load_features,
     add_weather_features,
+    apply_horizon_features,
     load_prices,
 )
 
@@ -98,6 +99,10 @@ def _build_forecast_features(
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     forecast_df = df.reindex(target_ts).drop(columns=[TARGET], errors="ignore")
+
+    horizon_steps_per_row = np.arange(1, len(forecast_df) + 1, dtype=np.int32)
+    forecast_df = apply_horizon_features(forecast_df, horizon_steps_per_row)
+
     return forecast_df, target_ts
 
 
@@ -189,6 +194,12 @@ async def run_forecast(area: str, horizon_steps: int = 672) -> str:
         pred_p10 = models["p10"].predict(X_aligned)  # type: ignore[union-attr]
         pred_p50 = models["p50"].predict(X_aligned)  # type: ignore[union-attr]
         pred_p90 = models["p90"].predict(X_aligned)  # type: ignore[union-attr]
+
+        # Independent quantile models can produce crossings (e.g. p10 > p50).
+        # Sort per row so the band is always coherent.
+        stacked = np.stack([pred_p10, pred_p50, pred_p90], axis=1)
+        stacked.sort(axis=1)
+        pred_p10, pred_p50, pred_p90 = stacked[:, 0], stacked[:, 1], stacked[:, 2]
 
         # 6. Persist forecast values -----------------------------------------
         forecast_rows = [

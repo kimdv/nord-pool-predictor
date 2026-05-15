@@ -15,6 +15,19 @@ from nordpool_predictor.config import get_settings
 logger = logging.getLogger(__name__)
 
 TARGET = "price_dkk_kwh"
+HORIZON_STEP_FEATURE = "horizon_step"
+
+# How far ahead (in 15-min steps) each lag feature is still observable from
+# issuance time.  A 15-min step = 1; an hour = 4; a day = 96; a week = 672.
+# Example: ``price_lag_24h`` at target ``t`` references price at ``t - 24h``.
+# At issuance ``t - h`` we only know prices up to ``t - h``, so this lag is
+# observable iff ``h ≤ 24h`` (≤ 96 steps).  Beyond that the lag would require
+# a *predicted* price we don't have, so it's masked to NaN.
+LAG_HORIZON_LIMITS: dict[str, int] = {
+    "price_lag_24h": 96,
+    "price_lag_48h": 192,
+    "price_lag_168h": 672,
+}
 
 _sync_engine: Engine | None = None
 
@@ -494,5 +507,51 @@ def add_residual_load_features(df: pd.DataFrame) -> pd.DataFrame:
 
     if "total_renewable_mw" in df.columns and "net_import_mw" in df.columns:
         df["residual_load_proxy_mw"] = df["net_import_mw"] - df["total_renewable_mw"]
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Horizon-aware features
+# ---------------------------------------------------------------------------
+
+
+def apply_horizon_features(
+    df: pd.DataFrame,
+    horizon_steps: np.ndarray | pd.Series | list[int],
+) -> pd.DataFrame:
+    """Attach a ``horizon_step`` feature and mask lags that wouldn't be observable.
+
+    ``horizon_steps`` is the number of 15-min steps between the forecast
+    *issuance* time and the *target* timestamp for each row (1-based: step 1
+    means 15 minutes ahead).
+
+    The same trained model is used for every horizon from step 1 to step 672.
+    Without a horizon-step signal it can't distinguish "predict 15 minutes
+    ahead" from "predict 7 days ahead", and it can't learn that long-horizon
+    lags are unreliable.  This function fixes both:
+
+    * Adds ``horizon_step`` as an explicit feature so the model can condition
+      on it.
+    * Sets each lag column to ``NaN`` for rows whose horizon exceeds the
+      lag's availability (see :data:`LAG_HORIZON_LIMITS`).  At training time
+      this teaches the model what features it will (or won't) have access to
+      at prediction time.
+    """
+    horizon_array = np.asarray(horizon_steps, dtype=np.int32)
+    if len(horizon_array) != len(df):
+        raise ValueError(
+            f"horizon_steps length {len(horizon_array)} does not match "
+            f"DataFrame length {len(df)}"
+        )
+
+    df = df.copy()
+    df[HORIZON_STEP_FEATURE] = horizon_array
+
+    for col, max_step in LAG_HORIZON_LIMITS.items():
+        if col in df.columns:
+            mask = horizon_array > max_step
+            if mask.any():
+                df.loc[mask, col] = np.nan
 
     return df
