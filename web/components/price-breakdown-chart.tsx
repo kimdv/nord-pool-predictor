@@ -35,6 +35,7 @@ interface Props {
   area: AreaCode;
   gln: string | null;
   code: string | null;
+  refreshVersion?: number;
 }
 
 const CATEGORIES = [
@@ -77,7 +78,12 @@ function getActiveSlotIndex(slots: SlotBreakdown[], nowMs: number): number {
   return -1;
 }
 
-export default function PriceBreakdownChart({ area, gln, code }: Props) {
+export default function PriceBreakdownChart({
+  area,
+  gln,
+  code,
+  refreshVersion = 0,
+}: Props) {
   const [data, setData] = useState<SlotBreakdown[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [disabled, setDisabled] = useState<Set<CategoryKey>>(new Set());
@@ -112,7 +118,7 @@ export default function PriceBreakdownChart({ area, gln, code }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [area, gln, code]);
+  }, [area, gln, code, refreshVersion]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => setNowMs(Date.now()), 30_000);

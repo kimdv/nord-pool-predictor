@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useRouter } from "next/navigation";
 import AreaSwitcher, { useSelectedArea } from "@/components/area-switcher";
 import StatCard from "@/components/stat-card";
 import JobStatus from "@/components/job-status";
@@ -37,10 +38,16 @@ export default function DashboardContent({
   areaData: AreaData[];
   sources: SourceStatus[];
 }) {
+  const router = useRouter();
   const { selected, select } = useSelectedArea();
   const { selection: gridSelection, update: updateGrid } = useGridSelection();
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [forecast, setForecast] = useState<ForecastResponse | null>(null);
   const handleForecast = useCallback((f: ForecastResponse | null) => setForecast(f), []);
+  const refreshDashboard = useCallback(() => {
+    setRefreshVersion((version) => version + 1);
+    router.refresh();
+  }, [router]);
 
   const current = areaData.find((d) => d.info.code === selected) ?? areaData[0];
 
@@ -114,16 +121,25 @@ export default function DashboardContent({
         area={selected}
         gln={gridSelection?.gln ?? null}
         code={gridSelection?.code ?? null}
+        refreshVersion={refreshVersion}
       />
 
       <section className="space-y-4">
         <h2 className="text-lg font-semibold text-gray-900">
           7-dags prognose
         </h2>
-        <AreaCharts area={selected} onForecast={handleForecast} />
+        <AreaCharts
+          area={selected}
+          refreshVersion={refreshVersion}
+          onForecast={handleForecast}
+        />
       </section>
 
-      <JobStatus sources={sources} forecast={forecast} />
+      <JobStatus
+        sources={sources}
+        forecast={forecast}
+        onJobsFinished={refreshDashboard}
+      />
     </div>
   );
 }
