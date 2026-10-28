@@ -20,7 +20,7 @@
     "@types/react-dom": "^19.0.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@next/eslint-plugin-next": "^16.4.3",
-    "eslint": "^10.4.0",
+    "eslint": "^10.13.0",
     "globals": "^17.6.0",
     "typescript-eslint": "^8.72.0",
     "typescript": "^6.0.3"
