@@ -11,12 +11,14 @@ import type { ForecastResponse } from "@/lib/api";
 
 export default function AreaCharts({
   area,
+  refreshVersion = 0,
   onForecast,
 }: {
   area: AreaCode;
+  refreshVersion?: number;
   onForecast?: (forecast: ForecastResponse | null) => void;
 }) {
-  const { data, loading } = useAreaData(area);
+  const { data, loading } = useAreaData(area, refreshVersion);
 
   const forecast = data?.forecast ?? null;
   useEffect(() => {

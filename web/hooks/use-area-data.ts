@@ -73,7 +73,7 @@ function buildCombinedData(
   );
 }
 
-export function useAreaData(area: AreaCode) {
+export function useAreaData(area: AreaCode, refreshVersion = 0) {
   const [data, setData] = useState<AreaDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [prevArea, setPrevArea] = useState(area);
@@ -121,7 +121,7 @@ export function useAreaData(area: AreaCode) {
     return () => {
       cancelled = true;
     };
-  }, [area]);
+  }, [area, refreshVersion]);
 
   return { data, loading };
 }

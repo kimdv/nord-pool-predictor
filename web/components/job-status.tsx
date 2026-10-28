@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JobSummary, SourceStatus, ForecastResponse } from "@/lib/api";
+import { hasNewlyFinishedJobs } from "@/lib/job-updates";
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "Ingen data";
@@ -64,6 +65,7 @@ const STATUS_DOT_CLASS: Record<string, string> = {
 };
 
 const TRIGGERED_POLL_MS = 5000;
+const IDLE_POLL_MS = 30000;
 const FEEDBACK_CLEAR_MS = 10000;
 
 type FeedbackState = { kind: "idle" | "ok" | "error"; text: string };
@@ -122,16 +124,19 @@ function RefreshButton({
 export default function JobStatus({
   sources: initialSources,
   forecast,
+  onJobsFinished,
 }: {
   sources: SourceStatus[];
   forecast?: ForecastResponse | null;
+  onJobsFinished?: () => void;
 }) {
   const [sources, setSources] = useState(initialSources);
   const [triggering, setTriggering] = useState<Set<string>>(new Set());
   const [feedback, setFeedback] = useState<Record<string, FeedbackState>>({});
   const [summaries, setSummaries] = useState<Record<string, JobSummary>>({});
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const previousSummariesRef = useRef<Record<string, JobSummary> | null>(null);
+  const mountedRef = useRef(false);
   const feedbackTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const fetchAbortRef = useRef<AbortController | null>(null);
 
@@ -144,6 +149,7 @@ export default function JobStatus({
       const res = await fetch("/api/backend/health", { signal });
       if (!res.ok) return;
       const data = await res.json();
+      if (signal?.aborted) return;
       if (data.sources) setSources(data.sources);
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
@@ -157,17 +163,22 @@ export default function JobStatus({
       const res = await fetch("/api/backend/jobs/summary", { signal });
       if (!res.ok) return;
       const rows: JobSummary[] = await res.json();
+      if (signal?.aborted) return;
       const map: Record<string, JobSummary> = {};
       for (const row of rows) map[row.job_type] = row;
+      const previous = previousSummariesRef.current;
+      previousSummariesRef.current = map;
       setSummaries(map);
+      if (hasNewlyFinishedJobs(previous, map)) onJobsFinished?.();
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         console.warn("Failed to refresh job summaries", err);
       }
     }
-  }, []);
+  }, [onJobsFinished]);
 
   const refreshAll = useCallback(async () => {
+    if (!mountedRef.current) return;
     fetchAbortRef.current?.abort();
     const controller = new AbortController();
     fetchAbortRef.current = controller;
@@ -178,13 +189,15 @@ export default function JobStatus({
   }, [refreshSources, refreshSummaries]);
 
   useEffect(() => {
-    refreshSummaries();
+    mountedRef.current = true;
+    refreshAll();
     return () => {
+      mountedRef.current = false;
       fetchAbortRef.current?.abort();
       const timers = feedbackTimersRef.current;
       for (const t of Object.values(timers)) clearTimeout(t);
     };
-  }, [refreshSummaries]);
+  }, [refreshAll]);
 
   const anyRunning = useMemo(() => {
     if (triggering.size > 0) return true;
@@ -192,20 +205,19 @@ export default function JobStatus({
   }, [triggering, summaries]);
 
   useEffect(() => {
-    if (!anyRunning) {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-      return;
+    const delay = anyRunning ? TRIGGERED_POLL_MS : IDLE_POLL_MS;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    async function poll() {
+      await refreshAll();
+      if (!cancelled) timer = setTimeout(poll, delay);
     }
-    if (pollRef.current) return;
-    pollRef.current = setInterval(refreshAll, TRIGGERED_POLL_MS);
+
+    timer = setTimeout(poll, delay);
     return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
+      cancelled = true;
+      clearTimeout(timer);
     };
   }, [anyRunning, refreshAll]);
 
@@ -228,6 +240,8 @@ export default function JobStatus({
           method: "POST",
         });
         const data = await res.json().catch(() => ({}));
+        // A fast job can finish before the first summary response arrives.
+        if (res.ok) previousSummariesRef.current ??= {};
         setFeedback((prev) => ({
           ...prev,
           [key]: res.ok
@@ -247,7 +261,7 @@ export default function JobStatus({
           return next;
         });
         await refreshAll();
-        scheduleFeedbackClear(key);
+        if (mountedRef.current) scheduleFeedbackClear(key);
       }
     },
     [refreshAll, scheduleFeedbackClear],
