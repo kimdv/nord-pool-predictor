@@ -1,5 +1,7 @@
 "use client";
 
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
+
 import {
   CartesianGrid,
   Legend,
@@ -34,7 +36,7 @@ export default function ForecastEvolutionChart({
   }
 
   const data = snapshots.map((s) => ({
-    issued: new Date(s.issued_at).toLocaleDateString("da-DK", {
+    issued: formatCopenhagenDateTime(s.issued_at, {
       month: "short",
       day: "numeric",
       hour: "2-digit",

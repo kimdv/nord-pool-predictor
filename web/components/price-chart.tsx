@@ -14,6 +14,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { CombinedPoint } from "@/hooks/use-area-data";
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
 export default function PriceChart({
   data,
@@ -40,7 +41,7 @@ export default function PriceChart({
 
   const formatted = data.map((d) => ({
     ...d,
-    label: new Date(d.ts).toLocaleString("da-DK", {
+    label: formatCopenhagenDateTime(d.ts, {
       month: "short",
       day: "numeric",
       hour: "2-digit",

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { fetchJson, fetchOptionalJson } from "@/lib/client-api";
+import { endOfTomorrowInCopenhagen } from "@/lib/copenhagen-time";
 import type { AreaCode } from "@/components/area-switcher";
 import type {
   ForecastResponse,
@@ -32,14 +33,6 @@ interface LoadedAreaData extends AreaDetailData {
 }
 
 type AreaDataErrors = Partial<Record<"prices" | "forecast" | "accuracy" | "benchmarks", string>>;
-
-function endOfTomorrow(): string {
-  const end = new Date();
-  end.setDate(end.getDate() + 2);
-  end.setHours(0, 0, 0, 0);
-  end.setMilliseconds(-1);
-  return end.toISOString();
-}
 
 function buildCombinedData(
   prices: PricesResponse | null,
@@ -91,7 +84,7 @@ export function useAreaData(area: AreaCode, refreshVersion = 0) {
 
     const now = new Date();
     const start = new Date(now.getTime() - 48 * 3600_000).toISOString();
-    const end = endOfTomorrow();
+    const end = endOfTomorrowInCopenhagen(now);
 
     async function load() {
       setLoading(true);

@@ -1,5 +1,6 @@
 import type { AccuracyRecord } from "@/lib/api";
 import { translateQuality, QUALITY_CSS } from "@/lib/quality-labels";
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
 function fmtNum(n: number | null | undefined, decimals = 4): string {
   if (n == null) return "—";
@@ -44,7 +45,7 @@ export default function AccuracyCard({ records }: { records: AccuracyRecord[] })
             {records.map((r) => (
               <tr key={r.run_id} className="border-b border-gray-50">
                 <td className="py-3 pr-4 text-gray-600">
-                  {new Date(r.issued_at).toLocaleDateString("da-DK", {
+                  {formatCopenhagenDateTime(r.issued_at, {
                     month: "short",
                     day: "numeric",
                     hour: "2-digit",

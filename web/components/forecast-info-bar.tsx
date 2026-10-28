@@ -1,4 +1,5 @@
 import type { ForecastResponse } from "@/lib/api";
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
 const STATUS_COLORS: Record<string, string> = {
   completed: "bg-emerald-400",
@@ -30,7 +31,7 @@ export default function ForecastInfoBar({ forecast }: { forecast: ForecastRespon
       <div className="flex items-center gap-2">
         <span className="text-gray-400">Udgivet</span>
         <span className="font-medium text-gray-700">
-          {new Date(forecast.issued_at).toLocaleString("da-DK")}
+          {formatCopenhagenDateTime(forecast.issued_at)}
         </span>
       </div>
       <div className="h-4 w-px bg-gray-200" />

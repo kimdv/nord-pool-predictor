@@ -1,5 +1,7 @@
 "use client";
 
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
+
 import {
   AreaChart,
   Area,
@@ -35,7 +37,7 @@ export default function ForecastChart({ data }: { data: ForecastPoint[] }) {
   const formatted = data.map((d) => ({
     ...d,
     band: [d.lower, d.upper] as [number, number],
-    label: new Date(d.ts).toLocaleString("da-DK", {
+    label: formatCopenhagenDateTime(d.ts, {
       weekday: "short",
       hour: "2-digit",
       minute: "2-digit",

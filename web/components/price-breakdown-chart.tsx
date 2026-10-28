@@ -17,6 +17,7 @@ import type { AreaCode } from "@/components/area-switcher";
 import ChartSkeleton from "./chart-skeleton";
 import RequestError from "./request-error";
 import { fetchJson } from "@/lib/client-api";
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
 interface SlotBreakdown {
   hour: number;
@@ -50,18 +51,17 @@ const CATEGORIES = [
 
 type CategoryKey = (typeof CATEGORIES)[number]["key"];
 
-const SLOT_FORMATTER = new Intl.DateTimeFormat("da-DK", {
+const SLOT_FORMAT: Intl.DateTimeFormatOptions = {
   hour: "2-digit",
   minute: "2-digit",
   hourCycle: "h23",
-  timeZone: "Europe/Copenhagen",
-});
+};
 const SLOT_MS = 15 * 60 * 1000;
 
 function formatSlot(ts: string): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return ts;
-  return SLOT_FORMATTER.format(d);
+  return formatCopenhagenDateTime(d, SLOT_FORMAT);
 }
 
 function getActiveSlotIndex(slots: SlotBreakdown[], nowMs: number): number {

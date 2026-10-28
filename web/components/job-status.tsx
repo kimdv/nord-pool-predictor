@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JobSummary, SourceStatus, ForecastResponse } from "@/lib/api";
 import { hasNewlyFinishedJobs } from "@/lib/job-updates";
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "Ingen data";
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return "Ukendt";
-  return d.toLocaleString("da-DK", {
+  return formatCopenhagenDateTime(d, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -316,7 +317,7 @@ export default function JobStatus({
           <div className="flex items-center gap-1.5">
             <span className="text-gray-400">Udgivet</span>
             <span className="font-medium text-gray-700 text-xs">
-              {new Date(forecast.issued_at).toLocaleString("da-DK")}
+              {formatCopenhagenDateTime(forecast.issued_at)}
             </span>
           </div>
           <div className="flex items-center gap-1.5">
