@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 export const AREA_CODES = ["DK1", "DK2"] as const;
 export type AreaCode = (typeof AREA_CODES)[number];
@@ -17,11 +17,12 @@ export function isAreaCode(value: string): value is AreaCode {
 const STORAGE_KEY = "preferredArea";
 
 export function useSelectedArea() {
-  const [selected, setSelected] = useState<AreaCode>(() => {
-    if (typeof window === "undefined") return "DK1";
+  const [selected, setSelected] = useState<AreaCode>("DK1");
+
+  useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
-    return stored && isAreaCode(stored) ? stored : "DK1";
-  });
+    if (stored && isAreaCode(stored)) setSelected(stored);
+  }, []);
 
   const select = useCallback((code: AreaCode) => {
     setSelected(code);

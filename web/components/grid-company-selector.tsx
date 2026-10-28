@@ -37,7 +37,11 @@ function saveSelection(sel: Selection) {
 }
 
 export function useGridSelection() {
-  const [selection, setSelection] = useState<Selection | null>(() => loadSelection());
+  const [selection, setSelection] = useState<Selection | null>(null);
+
+  useEffect(() => {
+    setSelection(loadSelection());
+  }, []);
 
   const update = useCallback((sel: Selection) => {
     saveSelection(sel);
