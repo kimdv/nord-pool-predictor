@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson } from "@/lib/client-api";
 import RequestError from "./request-error";
+import { readPreference, writePreference } from "@/lib/preference-storage";
 
 interface GridCompany {
   gln: string;
@@ -25,9 +26,8 @@ interface Selection {
 const STORAGE_KEY = "gridCompanySelection";
 
 function loadSelection(): Selection | null {
-  if (typeof window === "undefined") return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = readPreference(STORAGE_KEY);
     return raw ? (JSON.parse(raw) as Selection) : null;
   } catch {
     return null;
@@ -35,7 +35,7 @@ function loadSelection(): Selection | null {
 }
 
 function saveSelection(sel: Selection) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(sel));
+  writePreference(STORAGE_KEY, JSON.stringify(sel));
 }
 
 export function useGridSelection() {
@@ -46,8 +46,8 @@ export function useGridSelection() {
   }, []);
 
   const update = useCallback((sel: Selection) => {
-    saveSelection(sel);
     setSelection(sel);
+    saveSelection(sel);
   }, []);
 
   return { selection, update };
