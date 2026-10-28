@@ -69,6 +69,12 @@ export default function GridCompanySelector({
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const tariffRequestRef = useRef<AbortController | null>(null);
+
+  const cancelTariffRequest = useCallback(() => {
+    tariffRequestRef.current?.abort();
+    tariffRequestRef.current = null;
+  }, []);
 
   useEffect(() => {
     fetch("/api/backend/tariffs/grid-companies")
@@ -83,12 +89,16 @@ export default function GridCompanySelector({
         wrapperRef.current &&
         !wrapperRef.current.contains(e.target as Node)
       ) {
+        cancelTariffRequest();
         setOpen(false);
       }
     }
     document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, []);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      cancelTariffRequest();
+    };
+  }, [cancelTariffRequest]);
 
   const filtered = useMemo(() => {
     if (!query) return companies;
@@ -97,13 +107,20 @@ export default function GridCompanySelector({
   }, [companies, query]);
 
   function handlePickCompany(c: GridCompany) {
+    cancelTariffRequest();
+    const controller = new AbortController();
+    tariffRequestRef.current = controller;
     setPendingGln({ gln: c.gln, name: c.name });
+    setCodes([]);
     setStep("code");
     setQuery("");
     setLoading(true);
-    fetch(`/api/backend/tariffs/grid-companies/${c.gln}/codes`)
+    fetch(`/api/backend/tariffs/grid-companies/${c.gln}/codes`, {
+      signal: controller.signal,
+    })
       .then((r) => (r.ok ? r.json() : []))
       .then((data: TariffCode[]) => {
+        if (controller.signal.aborted) return;
         setCodes(data);
         setLoading(false);
         const residential = data.find(
@@ -114,10 +131,13 @@ export default function GridCompanySelector({
           handlePickCode(residential, c.gln, c.name);
         }
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
   }
 
   function handlePickCode(t: TariffCode, gln?: string, name?: string) {
+    cancelTariffRequest();
     const g = gln ?? pendingGln?.gln ?? "";
     const n = name ?? pendingGln?.name ?? "";
     const sel: Selection = {
@@ -140,6 +160,7 @@ export default function GridCompanySelector({
     <div ref={wrapperRef} className="relative">
       <button
         onClick={() => {
+          cancelTariffRequest();
           setOpen(!open);
           setStep("company");
           setQuery("");
@@ -249,6 +270,7 @@ export default function GridCompanySelector({
               )}
               <button
                 onClick={() => {
+                  cancelTariffRequest();
                   setStep("company");
                   setQuery("");
                 }}
