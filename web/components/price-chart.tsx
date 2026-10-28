@@ -16,6 +16,10 @@ import {
 import type { CombinedPoint } from "@/hooks/use-area-data";
 import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
+const AXIS_TIME_FORMAT: Intl.DateTimeFormatOptions = {
+  month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+};
+
 export default function PriceChart({
   data,
   productionHorizon,
@@ -39,42 +43,32 @@ export default function PriceChart({
     );
   }
 
-  const formatted = data.map((d) => ({
-    ...d,
-    label: formatCopenhagenDateTime(d.ts, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }),
-  }));
-
-  const lastActualIdx = formatted.findLastIndex((d) => d.actual != null);
-  const cutoffLabel = lastActualIdx >= 0 ? formatted[lastActualIdx].label : null;
+  const lastActualIdx = data.findLastIndex((d) => d.actual != null);
+  const cutoffTimestamp = lastActualIdx >= 0 ? data[lastActualIdx].ts : null;
   const nowMs = Date.now();
-  let nowLabel: string | null = null;
+  let nowTimestamp: string | null = null;
   let bestNowDiff = Infinity;
-  for (const point of formatted) {
+  for (const point of data) {
     const diff = Math.abs(new Date(point.ts).getTime() - nowMs);
     if (diff < bestNowDiff) {
       bestNowDiff = diff;
-      nowLabel = point.label;
+      nowTimestamp = point.ts;
     }
   }
 
-  let prodHorizonLabel: string | null = null;
+  let prodHorizonTimestamp: string | null = null;
   if (productionHorizon) {
     const horizonMs = new Date(productionHorizon).getTime();
     let bestIdx = -1;
     let bestDiff = Infinity;
-    for (let i = 0; i < formatted.length; i++) {
-      const diff = Math.abs(new Date(formatted[i].ts).getTime() - horizonMs);
+    for (let i = 0; i < data.length; i++) {
+      const diff = Math.abs(new Date(data[i].ts).getTime() - horizonMs);
       if (diff < bestDiff) {
         bestDiff = diff;
         bestIdx = i;
       }
     }
-    if (bestIdx >= 0) prodHorizonLabel = formatted[bestIdx].label;
+    if (bestIdx >= 0) prodHorizonTimestamp = data[bestIdx].ts;
   }
 
   return (
@@ -111,14 +105,15 @@ export default function PriceChart({
       <div className="h-80">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
-            data={formatted}
+            data={data}
             margin={{ top: 5, right: 20, bottom: 5, left: 10 }}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
             <XAxis
-              dataKey="label"
+              dataKey="ts"
+              tickFormatter={(ts: string) => formatCopenhagenDateTime(ts, AXIS_TIME_FORMAT)}
               tick={{ fill: "#9ca3af", fontSize: 11 }}
-              interval={Math.max(Math.floor(formatted.length / 12) - 1, 0)}
+              interval={Math.max(Math.floor(data.length / 12) - 1, 0)}
               axisLine={{ stroke: "#e5e7eb" }}
               tickLine={false}
             />
@@ -136,6 +131,7 @@ export default function PriceChart({
               }}
             />
             <Tooltip
+              labelFormatter={(ts) => formatCopenhagenDateTime(String(ts), { ...AXIS_TIME_FORMAT, timeZoneName: "shortOffset" })}
               contentStyle={{
                 backgroundColor: "#ffffff",
                 border: "1px solid #e5e7eb",
@@ -159,9 +155,9 @@ export default function PriceChart({
               iconType="circle"
               iconSize={8}
             />
-            {nowLabel && nowLabel !== cutoffLabel && (
+            {nowTimestamp && nowTimestamp !== cutoffTimestamp && (
               <ReferenceLine
-                x={nowLabel}
+                x={nowTimestamp}
                 stroke="#d1d5db"
                 strokeWidth={1}
                 strokeDasharray="4 3"
@@ -173,9 +169,9 @@ export default function PriceChart({
                 }}
               />
             )}
-            {cutoffLabel && (
+            {cutoffTimestamp && (
               <ReferenceLine
-                x={cutoffLabel}
+                x={cutoffTimestamp}
                 stroke="#d1d5db"
                 strokeWidth={1}
                 strokeDasharray="4 3"
@@ -187,9 +183,9 @@ export default function PriceChart({
                 }}
               />
             )}
-            {prodHorizonLabel && prodHorizonLabel !== cutoffLabel && (
+            {prodHorizonTimestamp && prodHorizonTimestamp !== cutoffTimestamp && (
               <ReferenceLine
-                x={prodHorizonLabel}
+                x={prodHorizonTimestamp}
                 stroke="#fcd34d"
                 strokeWidth={1}
                 strokeDasharray="4 3"

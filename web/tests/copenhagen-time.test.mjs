@@ -41,3 +41,12 @@ test("chart times use Copenhagen regardless of the viewer's timezone", () => {
     else process.env.TZ = original;
   }
 });
+
+test("tooltip offsets distinguish the two repeated autumn hours", () => {
+  const options = { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "shortOffset" };
+  const first = formatCopenhagenDateTime("2026-10-25T00:15:00Z", options);
+  const second = formatCopenhagenDateTime("2026-10-25T01:15:00Z", options);
+  assert.match(first, /^02\.15/);
+  assert.match(second, /^02\.15/);
+  assert.notEqual(first, second);
+});
