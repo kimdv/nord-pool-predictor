@@ -12,13 +12,13 @@
   "dependencies": {
     "next": "^16.4.3",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6",
+    "react-dom": "^19.3.1",
     "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
+    "@types/react-dom": "^19.3.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@next/eslint-plugin-next": "^16.4.3",
     "eslint": "^10.13.0",
