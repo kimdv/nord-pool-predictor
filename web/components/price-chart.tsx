@@ -80,18 +80,32 @@ export default function PriceChart({
     <div className="card p-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
         <h2 className="text-lg font-semibold text-gray-900">Prisprognose</h2>
-        <button
-          type="button"
-          onClick={() => setShowUncertainty((v) => !v)}
-          aria-pressed={showUncertainty}
-          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all ${
-            showUncertainty
-              ? "border-transparent bg-emerald-600 text-white"
-              : "border-gray-200 text-gray-400 bg-white"
-          }`}
-        >
-          Usikkerhed
-        </button>
+        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+          <span
+            aria-hidden
+            className={`h-2.5 w-2.5 rounded-full transition-colors ${
+              showUncertainty ? "bg-emerald-600" : "bg-gray-300"
+            }`}
+          />
+          <span className="text-xs font-medium text-gray-700">Usikkerhed</span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={showUncertainty}
+            aria-label="Vis usikkerhedsinterval"
+            onClick={() => setShowUncertainty((v) => !v)}
+            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 ${
+              showUncertainty ? "bg-emerald-600" : "bg-gray-300"
+            }`}
+          >
+            <span
+              aria-hidden
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                showUncertainty ? "translate-x-[18px]" : "translate-x-0.5"
+              }`}
+            />
+          </button>
+        </label>
       </div>
       <div className="h-80">
         <ResponsiveContainer width="100%" height="100%">
