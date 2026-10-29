@@ -300,3 +300,40 @@ class TestEdsClient:
 
         call_kwargs = mock_client.get.call_args
         assert call_kwargs.kwargs["params"]["timezone"] == "UTC"
+
+
+@pytest.mark.parametrize("status", [429, 503])
+async def test_exhausted_http_retries_raise_without_a_final_sleep(status):
+    from nordpool_predictor.ingestion.eds_client import MAX_RETRIES, _request_with_retry
+
+    response = httpx.Response(status, request=httpx.Request("GET", "https://example.com/api"))
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = response
+    with patch("nordpool_predictor.ingestion.eds_client.asyncio.sleep", AsyncMock()) as sleep:
+        with pytest.raises(httpx.HTTPStatusError) as error:
+            await _request_with_retry(client, "https://example.com/api", {}, "TestDataset")
+    assert error.value.response.status_code == status
+    assert client.get.await_count == MAX_RETRIES
+    assert sleep.await_count == MAX_RETRIES - 1
+
+
+async def test_exhausted_upstream_failure_marks_the_ingestion_job_failed(database):
+    from sqlalchemy import text
+
+    from nordpool_predictor.scheduler.jobs import job_ingest_prices
+
+    response = httpx.Response(429, request=httpx.Request("GET", "https://example.com/api"))
+    with patch(
+        "nordpool_predictor.ingestion.prices._fetch_chunk",
+        AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "rate limited",
+                request=response.request,
+                response=response,
+            )
+        ),
+    ):
+        with pytest.raises(httpx.HTTPStatusError):
+            await job_ingest_prices()
+    async with database.connect() as conn:
+        assert (await conn.execute(text("SELECT status FROM job_runs"))).scalar_one() == "failed"
