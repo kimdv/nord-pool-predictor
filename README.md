@@ -68,7 +68,7 @@ docker compose up -d
 docker compose logs -f app
 ```
 
-On first startup the app will:
+On first startup the worker will:
 1. Run database migrations
 2. Backfill 365 days of historical data (prices, weather, production, cross-border flows)
 3. Train initial models for DK1 and DK2
@@ -169,7 +169,7 @@ Replace `<your-host>` with the IP or hostname of the machine running the Docker 
 
 ### Standalone (recommended)
 
-Use the provided `docker-compose.yml` which defines three services: `postgres`, `app`, and `web` on isolated Docker networks.
+Use the provided `docker-compose.yml` which defines four services: `postgres`, `app`, `worker`, and `web` on isolated Docker networks.
 
 ### Existing Docker Compose setup
 
@@ -207,6 +207,23 @@ services:
       - ./nordpool/models:/data/models
     ports:
       - "8000:8000"
+    networks:
+      - nordpool-backend
+      - nordpool-public
+
+  nordpool-worker:
+    image: ghcr.io/kimdv/nord-pool-predictor-app:latest
+    command: ["python", "-m", "nordpool_predictor.worker"]
+    restart: always
+    stop_grace_period: 30m
+    depends_on:
+      nordpool-db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${NORDPOOL_DB_USER}:${NORDPOOL_DB_PASSWORD}@nordpool-db:5432/nordpool
+      - MODEL_DIR=/data/models
+    volumes:
+      - ./nordpool/models:/data/models
     networks:
       - nordpool-backend
       - nordpool-public
@@ -283,3 +300,18 @@ is kept only in page memory.
 The web proxy forwards caller credentials and never injects a privileged token.
 Use HTTPS when accessing administrative actions over a network. Public read
 endpoints and scheduled jobs do not require this token.
+
+### Background worker
+
+The API only serves requests and submits jobs to PostgreSQL. Run exactly one
+`python -m nordpool_predictor.worker` process alongside it; Compose includes this
+service. The worker owns scheduling, bootstrap, ingestion and ML execution, and
+holds a PostgreSQL advisory lock for its lifetime. A second worker exits without
+executing jobs. API processes can scale independently.
+
+Manual triggers return HTTP 202 with a persistent `job_id`. Poll
+`GET /api/jobs/requests/{job_id}` for pending/running/completed/failed status.
+Duplicate queued or running jobs return HTTP 409. Pending jobs survive restarts;
+interrupted running jobs are marked failed when the worker restarts. Scheduled
+runs enqueue the same job types and share those duplicate controls. Shutdown
+waits for the current job; configure a suitable grace period for long training.

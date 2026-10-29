@@ -59,29 +59,30 @@ async def run_migrations() -> None:
         raw = await conn.get_raw_connection()
         raw_conn = raw.driver_connection  # type: ignore[union-attr]
 
-        await raw_conn.execute(
-            "CREATE TABLE IF NOT EXISTS _migrations_applied ("
-            "  filename TEXT PRIMARY KEY,"
-            "  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
-            ")"
-        )
+        async with raw_conn.transaction():
+            await raw_conn.execute("SELECT pg_advisory_xact_lock(73640102)")
+            await raw_conn.execute(
+                "CREATE TABLE IF NOT EXISTS _migrations_applied ("
+                "  filename TEXT PRIMARY KEY,"
+                "  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+                ")"
+            )
 
-        rows = await raw_conn.fetch("SELECT filename FROM _migrations_applied")
-        applied = {r[0] for r in rows}
+            rows = await raw_conn.fetch("SELECT filename FROM _migrations_applied")
+            applied = {r[0] for r in rows}
 
-        for f in files:
-            if f.name in applied:
-                continue
-            logger.info("Applying migration: %s", f.name)
-            sql = f.read_text()
-            async with raw_conn.transaction():
-                await raw_conn.execute(sql)
-                await raw_conn.execute(
-                    "INSERT INTO _migrations_applied (filename) VALUES ($1)",
-                    f.name,
-                )
-            logger.info("Applied migration: %s", f.name)
-
+            for f in files:
+                if f.name in applied:
+                    continue
+                logger.info("Applying migration: %s", f.name)
+                sql = f.read_text()
+                async with raw_conn.transaction():
+                    await raw_conn.execute(sql)
+                    await raw_conn.execute(
+                        "INSERT INTO _migrations_applied (filename) VALUES ($1)",
+                        f.name,
+                    )
+                logger.info("Applied migration: %s", f.name)
     logger.info("Database migrations up to date (%d files)", len(files))
 
 

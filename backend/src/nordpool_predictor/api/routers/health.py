@@ -7,7 +7,6 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from nordpool_predictor.api.schemas.health import HealthResponse, SourceFreshness
-from nordpool_predictor.bootstrap_state import is_bootstrapping
 from nordpool_predictor.database import get_session
 
 logger = logging.getLogger(__name__)
@@ -33,10 +32,17 @@ async def health_check() -> HealthResponse:
     sources: list[SourceFreshness] = []
     degraded = False
     now = datetime.now(UTC)
+    bootstrapping = False
 
     try:
         async with get_session() as session:
-            await session.execute(text("SELECT 1"))
+            bootstrap_result = await session.execute(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM job_requests WHERE job_name = 'bootstrap' "
+                    "AND status IN ('pending', 'running'))"
+                )
+            )
+            bootstrapping = bool(bootstrap_result.scalar())
 
             for source_name, query in _SOURCE_QUERIES.items():
                 result = await session.execute(text(query))
@@ -75,5 +81,5 @@ async def health_check() -> HealthResponse:
         sources=sources,
         degraded=degraded,
         last_forecast_at=last_forecast_at,
-        bootstrapping=is_bootstrapping(),
+        bootstrapping=bootstrapping,
     )
