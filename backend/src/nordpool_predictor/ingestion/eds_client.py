@@ -103,6 +103,9 @@ async def _request_with_retry(
             return payload.get("records", [])
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
+                if attempt == MAX_RETRIES:
+                    logger.error("Rate-limit retries exhausted for %s", dataset)
+                    raise
                 logger.warning(
                     "Rate limited (429) on %s, waiting %.0fs",
                     dataset,
@@ -148,4 +151,4 @@ async def _request_with_retry(
                 delay,
             )
             await asyncio.sleep(delay)
-    return []
+    raise RuntimeError(f"Request retries exhausted for {dataset}")
