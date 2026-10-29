@@ -57,6 +57,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Next-Cursor"],
     )
 
     app.include_router(prices.router)
