@@ -42,7 +42,10 @@ async def test_worker_stops_in_flight_work_after_lock_session_ends(database):
             finally:
                 cancelled.set()
 
-    with patch("nordpool_predictor.database.get_engine", return_value=database):
+    with (
+        patch("nordpool_predictor.database.get_engine", return_value=database),
+        patch("nordpool_predictor.worker.os._exit") as terminate_process,
+    ):
         task = asyncio.create_task(hold_worker_lock())
         await entered.wait()
         async with database.connect() as conn:
@@ -56,6 +59,7 @@ async def test_worker_stops_in_flight_work_after_lock_session_ends(database):
         with pytest.raises(RuntimeError, match="lock session lost"):
             await asyncio.wait_for(task, timeout=5)
         assert cancelled.is_set()
+        terminate_process.assert_called_once_with(1)
         async with worker_lock():
             pass
 
