@@ -342,3 +342,17 @@ accuracy API reports `coverage_24h`, `coverage_72h`, and `coverage_168h`. A run
 becomes `scored` only after all its values have actual prices. Benchmarks use the
 latest run with a complete 24-hour evaluation and compare baselines over that
 same period using prices available by issuance.
+
+### History pagination
+
+Forecast history returns 14 runs by default (maximum 100), with values loaded in
+one batch. Model history defaults to 20 versions (maximum 100). Both retain their
+array response shape and return `X-Next-Cursor` when another page exists; pass it
+as `cursor` on the next request with the same filters. Ordering includes a unique
+identifier so equal timestamps do not skip records. The web proxy and CORS
+configuration expose this header.
+
+Prices default to a seven-day window ending two days from now, with 1,000 rows
+per page (maximum 5,000). Use timezone-aware `start` and `end` (at most 366 days
+apart), and pass the response's `next_cursor` as `after` for the next page while
+keeping the same date bounds.

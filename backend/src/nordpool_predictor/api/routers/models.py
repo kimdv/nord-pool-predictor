@@ -4,9 +4,10 @@ import logging
 from pathlib import Path
 
 import joblib
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import text
 
+from nordpool_predictor.api.pagination import decode_cursor, encode_cursor
 from nordpool_predictor.api.schemas.models import FeatureImportance, ModelVersionResponse
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
@@ -16,16 +17,33 @@ router = APIRouter(prefix="/api/models", tags=["models"])
 
 
 @router.get("", response_model=list[ModelVersionResponse])
-async def list_models() -> list[ModelVersionResponse]:
+async def list_models(
+    response: Response,
+    limit: int = Query(20, ge=1, le=100),
+    cursor: str | None = Query(None, max_length=512),
+) -> list[ModelVersionResponse]:
+    where = ""
+    params: dict = {"limit": limit + 1}
+    if cursor is not None:
+        timestamp, identifier = decode_cursor(cursor)
+        where = "WHERE (trained_at, model_version) < (:time, :version) "
+        params.update(time=timestamp, version=identifier)
     async with get_session() as session:
         result = await session.execute(
             text(
                 "SELECT model_version, model_type, area, trained_at, "
                 "metrics_json, is_active "
-                "FROM model_versions ORDER BY trained_at DESC"
-            )
+                f"FROM model_versions {where} "
+                "ORDER BY trained_at DESC, model_version DESC LIMIT :limit"
+            ),
+            params,
         )
         rows = result.mappings().all()
+    if len(rows) > limit:
+        rows = rows[:limit]
+        response.headers["X-Next-Cursor"] = encode_cursor(
+            rows[-1]["trained_at"], rows[-1]["model_version"]
+        )
 
     return [
         ModelVersionResponse(

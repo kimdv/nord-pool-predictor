@@ -43,7 +43,10 @@ export async function GET(
     }
 
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    const headers = new Headers();
+    const cursor = res.headers.get("X-Next-Cursor");
+    if (cursor) headers.set("X-Next-Cursor", cursor);
+    return NextResponse.json(data, { status: res.status, headers });
   } catch {
     return NextResponse.json(
       { error: "Backend unavailable" },
