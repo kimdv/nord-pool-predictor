@@ -54,6 +54,30 @@ services:
           memory: 1536M
           cpus: "2"
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "-m", "nordpool_predictor.worker"]
+    restart: always
+    stop_grace_period: 30m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${NORDPOOL_DB_USER:-nordpool}:${NORDPOOL_DB_PASSWORD:-nordpool}@postgres:5432/nordpool
+      MODEL_DIR: /data/models
+    volumes:
+      - models:/data/models
+    networks:
+      - nordpool-backend
+      - nordpool-public
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+          cpus: "2"
+
   web:
     build:
       context: ./web
