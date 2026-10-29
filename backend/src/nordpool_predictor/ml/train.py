@@ -17,7 +17,6 @@ from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
 from nordpool_predictor.ml.features import (
     TARGET,
-    apply_horizon_features,
     build_feature_matrix,
 )
 
@@ -103,15 +102,6 @@ def _train_sync(
     df = df.dropna(subset=[TARGET])
     if len(df) < 100:
         raise ValueError(f"Insufficient training samples for {area}: {len(df)}")
-
-    # Assign a random horizon_step in [1, 672] to each training row and mask
-    # lag features that wouldn't be observable at that horizon.  This teaches
-    # the model that long-horizon predictions don't have access to recent
-    # lags and prevents it from over-relying on near-term signal that vanishes
-    # at prediction time.  Seeded for reproducibility (area-dependent).
-    rng = np.random.default_rng(seed=abs(hash(area)) % (2**32))
-    horizon_steps = rng.integers(1, MAX_HORIZON_STEPS + 1, size=len(df), dtype=np.int32)
-    df = apply_horizon_features(df, horizon_steps)
 
     y = df[TARGET]
     X = df.drop(columns=[TARGET])
@@ -244,7 +234,7 @@ async def train_models(area: str) -> str:
                     "model_type": "lgbm_quantile",
                     "area": area,
                     "horizon_strategy": "direct",
-                    "feature_set_version": "v1",
+                    "feature_set_version": "v2-asof",
                     "trained_at": now,
                     "metrics_json": json.dumps(metrics),
                     "artifact_path": artifact_path,
