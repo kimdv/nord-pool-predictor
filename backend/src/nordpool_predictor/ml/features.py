@@ -320,7 +320,7 @@ def add_weather_features(
             obs = fc
         elif not fc.empty:
             obs = pd.concat([obs, fc])
-            obs = obs[~obs.index.duplicated(keep="first")]
+            obs = obs[~obs.index.duplicated(keep="first")].sort_index()
 
     if obs.empty:
         logger.warning("No weather data available for area %s", area)
@@ -328,7 +328,7 @@ def add_weather_features(
             df[col] = np.nan
         return df
 
-    obs = obs.reindex(df.index, method="ffill")
+    obs = obs.sort_index().reindex(df.index, method="ffill", tolerance=pd.Timedelta(hours=1))
     df = df.join(obs, how="left")
     return df
 
@@ -405,7 +405,7 @@ def add_production_features(
             obs = fc
         elif not fc.empty:
             obs = pd.concat([obs, fc])
-            obs = obs[~obs.index.duplicated(keep="first")]
+            obs = obs[~obs.index.duplicated(keep="first")].sort_index()
 
     if obs.empty:
         logger.warning("No production data for area %s", area)
@@ -413,7 +413,11 @@ def add_production_features(
         df["solar_mw"] = np.nan
         return df
 
-    obs = obs[["wind_mw", "solar_mw"]].reindex(df.index, method="ffill")
+    obs = (
+        obs[["wind_mw", "solar_mw"]]
+        .sort_index()
+        .reindex(df.index, method="ffill", tolerance=pd.Timedelta(hours=1))
+    )
     df = df.join(obs, how="left")
     return df
 
@@ -498,7 +502,7 @@ def add_crossborder_features(
     pivot.columns = [f"flow_{c}" for c in pivot.columns]
     pivot["net_import_mw"] = pivot.sum(axis=1)
 
-    pivot = pivot.reindex(df.index, method="ffill")
+    pivot = pivot.sort_index().reindex(df.index, method="ffill", tolerance=pd.Timedelta(hours=1))
     df = df.join(pivot, how="left")
     return df
 
