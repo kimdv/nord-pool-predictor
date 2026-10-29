@@ -363,3 +363,13 @@ and manifest writes are atomic; registration happens only after the complete
 bundle is written. Existing directory registrations remain readable through the
 same shared loader. Model objects use a bounded per-process cache, and model
 loading/prediction run outside the API event loop.
+
+### Health probes
+
+`GET /api/health/live` checks process responsiveness without database queries.
+`GET /api/health/ready` returns HTTP 503 when the database fails, bootstrap is
+pending/running, source data is stale, or any configured area lacks a recent
+successful forecast with future values. Docker uses readiness for dependency
+health. The existing `/api/health` remains a detailed dashboard status endpoint.
+Failed or running forecasts do not advance successful forecast freshness, and
+`last_forecast_at` is the oldest latest-success timestamp across configured areas.
