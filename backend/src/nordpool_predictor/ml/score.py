@@ -73,6 +73,8 @@ async def score_forecasts(area: str | None = None) -> None:
         skipped,
         failed,
     )
+    if failed:
+        raise RuntimeError(f"Failed to score {failed} forecast run(s)")
 
 
 # ---------------------------------------------------------------------------
@@ -138,13 +140,6 @@ async def _score_single_run(
         return "skipped"
 
     coverage = len(merged) / len(fc)
-    if coverage < 0.5:
-        logger.info(
-            "Insufficient coverage for run %s (%.0f%%) — skipping",
-            run_id,
-            coverage * 100,
-        )
-        return "skipped"
 
     # -- Per-hour errors -----------------------------------------------------
     merged["abs_error"] = (merged["predicted"] - merged["actual"]).abs()
@@ -173,7 +168,11 @@ async def _score_single_run(
                 "VALUES "
                 "  (CAST(:run_id AS uuid), :ts, :actual_price_dkk_kwh, "
                 "   :predicted_price_dkk_kwh, :abs_error, :signed_error, :sq_error) "
-                "ON CONFLICT (run_id, ts) DO NOTHING"
+                "ON CONFLICT (run_id, ts) DO UPDATE SET "
+                "actual_price_dkk_kwh = EXCLUDED.actual_price_dkk_kwh, "
+                "predicted_price_dkk_kwh = EXCLUDED.predicted_price_dkk_kwh, "
+                "abs_error = EXCLUDED.abs_error, signed_error = EXCLUDED.signed_error, "
+                "sq_error = EXCLUDED.sq_error, scored_at = NOW()"
             ),
             error_rows,
         )
@@ -183,7 +182,9 @@ async def _score_single_run(
     metrics: dict[str, float | None] = {}
     for label, max_step in [("24h", 96), ("72h", 288), ("168h", 672)]:
         subset = merged[merged["horizon_step"] <= max_step]
-        if subset.empty:
+        expected = int((fc["horizon_step"] <= max_step).sum())
+        metrics[f"coverage_{label}"] = len(subset) / expected if expected else 0.0
+        if subset.empty or len(subset) < expected:
             metrics[f"mae_{label}"] = None
             metrics[f"rmse_{label}"] = None
             metrics[f"bias_{label}"] = None
@@ -209,6 +210,9 @@ async def _score_single_run(
     else:
         quality = "poor"
 
+    if metrics["mae_24h"] is None:
+        quality = None
+
     # -- Worst hour ----------------------------------------------------------
     worst_idx = int(merged["abs_error"].idxmax())
     worst_ts = merged.loc[worst_idx, "ts"]
@@ -223,14 +227,26 @@ async def _score_single_run(
                 "   rmse_24h, rmse_72h, rmse_168h, "
                 "   bias_24h, bias_72h, bias_168h, "
                 "   hitrate_0_05, hitrate_0_10, hitrate_0_20, "
-                "   quality_label, worst_hour_ts, worst_hour_abs_error) "
+                "   quality_label, worst_hour_ts, worst_hour_abs_error, "
+                "   coverage_24h, coverage_72h, coverage_168h) "
                 "VALUES "
                 "  (CAST(:run_id AS uuid), :mae_24h, :mae_72h, :mae_168h, "
                 "   :rmse_24h, :rmse_72h, :rmse_168h, "
                 "   :bias_24h, :bias_72h, :bias_168h, "
                 "   :hitrate_0_05, :hitrate_0_10, :hitrate_0_20, "
-                "   :quality_label, :worst_hour_ts, :worst_hour_abs_error) "
-                "ON CONFLICT (run_id) DO NOTHING"
+                "   :quality_label, :worst_hour_ts, :worst_hour_abs_error, "
+                "   :coverage_24h, :coverage_72h, :coverage_168h) "
+                "ON CONFLICT (run_id) DO UPDATE SET "
+                "mae_24h=EXCLUDED.mae_24h, mae_72h=EXCLUDED.mae_72h, "
+                "mae_168h=EXCLUDED.mae_168h, rmse_24h=EXCLUDED.rmse_24h, "
+                "rmse_72h=EXCLUDED.rmse_72h, rmse_168h=EXCLUDED.rmse_168h, "
+                "bias_24h=EXCLUDED.bias_24h, bias_72h=EXCLUDED.bias_72h, "
+                "bias_168h=EXCLUDED.bias_168h, hitrate_0_05=EXCLUDED.hitrate_0_05, "
+                "hitrate_0_10=EXCLUDED.hitrate_0_10, hitrate_0_20=EXCLUDED.hitrate_0_20, "
+                "quality_label=EXCLUDED.quality_label, worst_hour_ts=EXCLUDED.worst_hour_ts, "
+                "worst_hour_abs_error=EXCLUDED.worst_hour_abs_error, "
+                "coverage_24h=EXCLUDED.coverage_24h, coverage_72h=EXCLUDED.coverage_72h, "
+                "coverage_168h=EXCLUDED.coverage_168h, scored_at=NOW()"
             ),
             {
                 "run_id": run_id,
@@ -243,17 +259,17 @@ async def _score_single_run(
         await session.commit()
 
     # -- Baselines -----------------------------------------------------------
-    await score_baselines(run_id, area, fc, actuals)
+    await score_baselines(run_id, area, fc, actuals, issued_at)
 
     # -- Mark run as scored --------------------------------------------------
     async with get_session() as session:
         await session.execute(
             text(
                 "UPDATE forecast_runs "
-                "SET status = 'scored', updated_at = NOW() "
+                "SET status = :status, updated_at = NOW() "
                 "WHERE run_id = CAST(:run_id AS uuid)"
             ),
-            {"run_id": run_id},
+            {"run_id": run_id, "status": "scored" if coverage == 1.0 else "completed"},
         )
         await session.commit()
 
@@ -263,7 +279,7 @@ async def _score_single_run(
         quality,
         metrics.get("mae_24h") or 0.0,
     )
-    return "scored"
+    return "scored" if coverage == 1.0 else "partial"
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +292,7 @@ async def score_baselines(
     area: str,
     forecast_df: pd.DataFrame,
     actuals_df: pd.DataFrame,
+    issued_at: datetime,
 ) -> None:
     """Evaluate naive baselines against the same actuals.
 
@@ -284,7 +301,7 @@ async def score_baselines(
     * ``last_week_same_slot`` – actual price 168 h ago
     * ``quarter_of_week_average`` – rolling 4-week mean for the same quarter-of-week
     """
-    forecast_ts = forecast_df["ts"]
+    forecast_ts = forecast_df.loc[forecast_df["horizon_step"] <= 96, "ts"]
     ts_min = forecast_ts.min()
     ts_max = forecast_ts.max()
 
@@ -298,7 +315,7 @@ async def score_baselines(
                 "WHERE area = :area AND ts >= :start AND ts <= :end "
                 "ORDER BY ts"
             ),
-            {"area": area, "start": history_start, "end": ts_max},
+            {"area": area, "start": history_start, "end": min(ts_max, issued_at)},
         )
         rows = result.fetchall()
 
@@ -338,7 +355,7 @@ async def score_baselines(
         for ts, pred in preds.items():
             if ts in actual_map:
                 errors.append(pred - float(actual_map[ts]))
-        if not errors:
+        if not errors or len(errors) != len(forecast_ts):
             continue
         err = np.asarray(errors, dtype=float)
         insert_rows.append(
@@ -361,7 +378,8 @@ async def score_baselines(
                 "  (run_id, baseline_name, mae, rmse, bias) "
                 "VALUES "
                 "  (CAST(:run_id AS uuid), :baseline_name, :mae, :rmse, :bias) "
-                "ON CONFLICT (run_id, baseline_name) DO NOTHING"
+                "ON CONFLICT (run_id, baseline_name) DO UPDATE SET "
+                "mae = EXCLUDED.mae, rmse = EXCLUDED.rmse, bias = EXCLUDED.bias, scored_at = NOW()"
             ),
             insert_rows,
         )

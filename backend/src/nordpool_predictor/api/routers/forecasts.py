@@ -154,7 +154,8 @@ async def get_accuracy(
         result = await session.execute(
             text(
                 "SELECT frm.run_id, fr.issued_at, "
-                "frm.mae_24h, frm.rmse_24h, frm.bias_24h, frm.quality_label "
+                "frm.mae_24h, frm.rmse_24h, frm.bias_24h, frm.quality_label, "
+                "frm.coverage_24h, frm.coverage_72h, frm.coverage_168h "
                 "FROM forecast_run_metrics frm "
                 "JOIN forecast_runs fr ON fr.run_id = frm.run_id "
                 "WHERE fr.area = :area "
@@ -172,6 +173,9 @@ async def get_accuracy(
             rmse_24h=row["rmse_24h"],
             bias_24h=row["bias_24h"],
             quality_label=row["quality_label"],
+            coverage_24h=row["coverage_24h"],
+            coverage_72h=row["coverage_72h"],
+            coverage_168h=row["coverage_168h"],
         )
         for row in rows
     ]
@@ -183,7 +187,12 @@ async def get_benchmarks(area: str) -> BenchmarkResponse:
 
     async with get_session() as session:
         run_result = await session.execute(
-            text("SELECT run_id, area FROM latest_forecast_runs WHERE area = :area"),
+            text(
+                "SELECT fr.run_id, fr.area FROM forecast_runs fr "
+                "JOIN forecast_run_metrics fm ON fm.run_id = fr.run_id "
+                "WHERE fr.area = :area AND fm.mae_24h IS NOT NULL "
+                "ORDER BY fr.issued_at DESC LIMIT 1"
+            ),
             {"area": area},
         )
         run = run_result.mappings().first()
