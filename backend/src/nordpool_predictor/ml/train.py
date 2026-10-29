@@ -107,6 +107,10 @@ def _train_sync(
     X = df.drop(columns=[TARGET])
     logger.info("Training set: %d samples × %d features for %s", len(X), X.shape[1], area)
 
+    # Reserve the newest 20% before tuning; the final production model is refit later.
+    split = int(len(X) * 0.8)
+    X_development, y_development = X.iloc[:split], y.iloc[:split]
+    X_holdout, y_holdout = X.iloc[split:], y.iloc[split:]
     tscv = TimeSeriesSplit(n_splits=N_CV_SPLITS)
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -127,7 +131,7 @@ def _train_sync(
             )
 
     study.optimize(
-        lambda trial: _objective(trial, X, y, tscv),
+        lambda trial: _objective(trial, X_development, y_development, tscv),
         n_trials=N_OPTUNA_TRIALS,
         callbacks=[_optuna_callback],
     )
@@ -163,14 +167,8 @@ def _train_sync(
         trained_models[q_name] = model
         logger.info("Saved %s → %s", q_name, artifact)
 
-    folds = list(tscv.split(X))
-    _, last_val_idx = folds[-1]
-    X_val, y_val = X.iloc[last_val_idx], y.iloc[last_val_idx]
-    val_preds = trained_models["p50"].predict(X_val)
-
-    mae = float(np.mean(np.abs(y_val - val_preds)))
-    rmse = float(np.sqrt(np.mean((y_val - val_preds) ** 2)))
-    bias = float(np.mean(val_preds - y_val))
+    evaluation = evaluate_holdout(best_params, X_development, y_development, X_holdout, y_holdout)
+    mae, rmse, bias = evaluation["mae"], evaluation["rmse"], evaluation["bias"]
 
     metrics = {
         "mae": mae,
@@ -181,6 +179,10 @@ def _train_sync(
         "n_samples": len(X),
         "n_features": X.shape[1],
         "feature_names": list(X.columns),
+        "evaluation": "chronological_holdout",
+        "n_development_samples": len(X_development),
+        "n_holdout_samples": len(X_holdout),
+        "holdout_start": str(X_holdout.index.min()),
     }
 
     return model_version, model_dir_str, metrics, trained_models, now
@@ -253,3 +255,16 @@ async def train_models(area: str) -> str:
         metrics["bias"],
     )
     return model_version
+
+
+def evaluate_holdout(
+    params, X_development, y_development, X_holdout, y_holdout
+) -> dict[str, float]:
+    model = lgb.LGBMRegressor(objective="quantile", alpha=0.5, verbosity=-1, n_jobs=1, **params)
+    model.fit(X_development, y_development)
+    errors = np.asarray(model.predict(X_holdout)) - np.asarray(y_holdout)
+    return {
+        "mae": float(np.mean(np.abs(errors))),
+        "rmse": float(np.sqrt(np.mean(errors**2))),
+        "bias": float(np.mean(errors)),
+    }

@@ -331,3 +331,14 @@ usable; missing or expired forecasts are regenerated. If training is required,
 idempotent backfills restore the full configured history rather than trusting
 another area's newest timestamp. Per-area failures are recorded as a failed
 bootstrap request, and a restart resumes the remaining areas.
+
+### Accuracy evaluation
+
+Model registration reports a chronological 20% holdout that is excluded from
+hyperparameter tuning and evaluation-model fitting; production models are then
+fit on the full training window. Live forecasts are rescored as actual prices
+arrive. Horizon metrics stay null until that horizon is fully covered, and the
+accuracy API reports `coverage_24h`, `coverage_72h`, and `coverage_168h`. A run
+becomes `scored` only after all its values have actual prices. Benchmarks use the
+latest run with a complete 24-hour evaluation and compare baselines over that
+same period using prices available by issuance.
