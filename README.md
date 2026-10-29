@@ -356,3 +356,10 @@ Prices default to a seven-day window ending two days from now, with 1,000 rows
 per page (maximum 5,000). Use timezone-aware `start` and `end` (at most 366 days
 apart), and pass the response's `next_cursor` as `after` for the next page while
 keeping the same date bounds.
+
+Model registrations now point to an immutable JSON artifact manifest relative to
+`MODEL_DIR`, listing all quantile files and persisted feature importance. Artifact
+and manifest writes are atomic; registration happens only after the complete
+bundle is written. Existing directory registrations remain readable through the
+same shared loader. Model objects use a bounded per-process cache, and model
+loading/prediction run outside the API event loop.
