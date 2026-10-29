@@ -36,6 +36,9 @@ class AccuracyMetrics(BaseModel):
     rmse_24h: float | None = None
     bias_24h: float | None = None
     quality_label: str | None = None
+    coverage_24h: float | None = None
+    coverage_72h: float | None = None
+    coverage_168h: float | None = None
 
 
 class BenchmarkEntry(BaseModel):
