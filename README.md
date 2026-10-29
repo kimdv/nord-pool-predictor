@@ -324,3 +324,10 @@ whose `issued_at` is no later than that issuance. Historical observations are
 not substituted for future covariates. Missing historical snapshots stay missing;
 collect forecast vintages over time to improve training coverage. The migration deactivates older feature sets so the worker bootstrap retrains
 models with this contract before generating new forecasts.
+
+On each start the worker checks every configured area independently. Existing
+models are reused only when their feature set and all quantile artifacts are
+usable; missing or expired forecasts are regenerated. If training is required,
+idempotent backfills restore the full configured history rather than trusting
+another area's newest timestamp. Per-area failures are recorded as a failed
+bootstrap request, and a restart resumes the remaining areas.
