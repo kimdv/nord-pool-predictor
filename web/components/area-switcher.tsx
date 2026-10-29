@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
+import { readPreference, writePreference } from "@/lib/preference-storage";
 
 export const AREA_CODES = ["DK1", "DK2"] as const;
 export type AreaCode = (typeof AREA_CODES)[number];
@@ -20,13 +21,13 @@ export function useSelectedArea() {
   const [selected, setSelected] = useState<AreaCode>("DK1");
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = readPreference(STORAGE_KEY);
     if (stored && isAreaCode(stored)) setSelected(stored);
   }, []);
 
   const select = useCallback((code: AreaCode) => {
     setSelected(code);
-    localStorage.setItem(STORAGE_KEY, code);
+    writePreference(STORAGE_KEY, code);
   }, []);
 
   return { selected, select };

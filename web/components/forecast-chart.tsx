@@ -1,5 +1,7 @@
 "use client";
 
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
+
 import {
   AreaChart,
   Area,
@@ -35,11 +37,6 @@ export default function ForecastChart({ data }: { data: ForecastPoint[] }) {
   const formatted = data.map((d) => ({
     ...d,
     band: [d.lower, d.upper] as [number, number],
-    label: new Date(d.ts).toLocaleString("da-DK", {
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    }),
   }));
 
   return (
@@ -52,7 +49,8 @@ export default function ForecastChart({ data }: { data: ForecastPoint[] }) {
           <AreaChart data={formatted} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
             <XAxis
-              dataKey="label"
+              dataKey="ts"
+              tickFormatter={(ts: string) => formatCopenhagenDateTime(ts, { weekday: "short", hour: "2-digit", minute: "2-digit" })}
               tick={{ fill: "#9ca3af", fontSize: 11 }}
               interval={Math.max(Math.floor(formatted.length / 12) - 1, 0)}
               axisLine={{ stroke: "#e5e7eb" }}
@@ -72,6 +70,7 @@ export default function ForecastChart({ data }: { data: ForecastPoint[] }) {
               }}
             />
             <Tooltip
+              labelFormatter={(ts) => formatCopenhagenDateTime(String(ts), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "shortOffset" })}
               contentStyle={{
                 backgroundColor: "#ffffff",
                 border: "1px solid #e5e7eb",

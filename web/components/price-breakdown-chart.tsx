@@ -17,6 +17,7 @@ import type { AreaCode } from "@/components/area-switcher";
 import ChartSkeleton from "./chart-skeleton";
 import RequestError from "./request-error";
 import { fetchJson } from "@/lib/client-api";
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
 interface SlotBreakdown {
   hour: number;
@@ -50,18 +51,17 @@ const CATEGORIES = [
 
 type CategoryKey = (typeof CATEGORIES)[number]["key"];
 
-const SLOT_FORMATTER = new Intl.DateTimeFormat("da-DK", {
+const SLOT_FORMAT: Intl.DateTimeFormatOptions = {
   hour: "2-digit",
   minute: "2-digit",
   hourCycle: "h23",
-  timeZone: "Europe/Copenhagen",
-});
+};
 const SLOT_MS = 15 * 60 * 1000;
 
 function formatSlot(ts: string): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return ts;
-  return SLOT_FORMATTER.format(d);
+  return formatCopenhagenDateTime(d, SLOT_FORMAT);
 }
 
 function getActiveSlotIndex(slots: SlotBreakdown[], nowMs: number): number {
@@ -163,7 +163,7 @@ export default function PriceBreakdownChart({
       const vat = disabled.has("vat") ? 0 : subtotal * 0.25;
 
       return {
-        slot: formatSlot(s.ts),
+        ts: s.ts,
         isCurrent: index === activeSlotIndex,
         spot_price: spot,
         grid_tariff: grid,
@@ -174,7 +174,7 @@ export default function PriceBreakdownChart({
       };
     });
   }, [activeSlotIndex, data, disabled]);
-  const activeSlot = chartData[activeSlotIndex]?.slot ?? null;
+  const activeTimestamp = chartData[activeSlotIndex]?.ts ?? null;
 
   if (!gln || !code) {
     return (
@@ -242,7 +242,8 @@ export default function PriceBreakdownChart({
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
             <XAxis
-              dataKey="slot"
+              dataKey="ts"
+              tickFormatter={formatSlot}
               tick={{ fill: "#9ca3af", fontSize: 11 }}
               axisLine={{ stroke: "#e5e7eb" }}
               tickLine={false}
@@ -277,7 +278,9 @@ export default function PriceBreakdownChart({
                 );
                 return (
                   <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-md text-[13px]">
-                    <p className="font-medium text-gray-800 mb-1">{label}</p>
+                    <p className="font-medium text-gray-800 mb-1">
+                      {formatCopenhagenDateTime(String(label), { ...SLOT_FORMAT, timeZoneName: "shortOffset" })}
+                    </p>
                     {payload.map((p) => {
                       const key = String(p.dataKey ?? "");
                       return (
@@ -296,9 +299,9 @@ export default function PriceBreakdownChart({
               }}
             />
             <Legend content={() => null} />
-            {activeSlot && (
+            {activeTimestamp && (
               <ReferenceLine
-                x={activeSlot}
+                x={activeTimestamp}
                 stroke="#111827"
                 strokeWidth={1.5}
                 label={{
@@ -321,9 +324,9 @@ export default function PriceBreakdownChart({
                   cat.key === "vat" ? [2, 2, 0, 0] : undefined
                 }
               >
-                {chartData.map((entry, index) => (
+                {chartData.map((entry) => (
                   <Cell
-                    key={`${cat.key}-${entry.slot}-${index}`}
+                    key={`${cat.key}-${entry.ts}`}
                     fill={cat.color}
                     fillOpacity={entry.isCurrent ? 1 : 0.82}
                     stroke={entry.isCurrent ? "#111827" : "transparent"}

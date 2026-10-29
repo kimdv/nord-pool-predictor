@@ -1,5 +1,7 @@
 "use client";
 
+import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
+
 import {
   CartesianGrid,
   Legend,
@@ -34,12 +36,7 @@ export default function ForecastEvolutionChart({
   }
 
   const data = snapshots.map((s) => ({
-    issued: new Date(s.issued_at).toLocaleDateString("da-DK", {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }),
+    issued_at: s.issued_at,
     steps: s.steps,
   }));
 
@@ -52,7 +49,8 @@ export default function ForecastEvolutionChart({
         <LineChart data={data}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
           <XAxis
-            dataKey="issued"
+            dataKey="issued_at"
+            tickFormatter={(ts: string) => formatCopenhagenDateTime(ts, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
             stroke="#9ca3af"
             fontSize={12}
             axisLine={{ stroke: "#e5e7eb" }}
@@ -65,6 +63,7 @@ export default function ForecastEvolutionChart({
             tickLine={false}
           />
           <Tooltip
+            labelFormatter={(ts) => formatCopenhagenDateTime(String(ts), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "shortOffset" })}
             contentStyle={{
               backgroundColor: "#ffffff",
               border: "1px solid #e5e7eb",
