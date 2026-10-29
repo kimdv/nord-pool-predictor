@@ -131,6 +131,7 @@ export default function JobStatus({
   forecast?: ForecastResponse | null;
   onJobsFinished?: () => void;
 }) {
+  const [adminToken, setAdminToken] = useState("");
   const [sources, setSources] = useState(initialSources);
   const [triggering, setTriggering] = useState<Set<string>>(new Set());
   const [feedback, setFeedback] = useState<Record<string, FeedbackState>>({});
@@ -233,12 +234,20 @@ export default function JobStatus({
 
   const trigger = useCallback(
     async (key: string) => {
+      if (!adminToken) {
+        setFeedback((prev) => ({
+          ...prev,
+          [key]: { kind: "error", text: "Angiv administrator-token" },
+        }));
+        return;
+      }
       setTriggering((prev) => new Set(prev).add(key));
       setFeedback((prev) => ({ ...prev, [key]: IDLE_FEEDBACK }));
 
       try {
         const res = await fetch(`/api/backend/jobs/trigger/${key}`, {
           method: "POST",
+          headers: { Authorization: `Bearer ${adminToken}` },
         });
         const data = await res.json().catch(() => ({}));
         // A fast job can finish before the first summary response arrives.
@@ -265,12 +274,22 @@ export default function JobStatus({
         if (mountedRef.current) scheduleFeedbackClear(key);
       }
     },
-    [refreshAll, scheduleFeedbackClear],
+    [adminToken, refreshAll, scheduleFeedbackClear],
   );
 
   return (
     <div className="card p-6">
       <h2 className="text-lg font-semibold text-gray-900 mb-3">Datakilder</h2>
+      <label className="mb-4 block text-xs text-gray-500">
+        Administrator-token til manuelle job (gemmes ikke)
+        <input
+          type="password"
+          autoComplete="off"
+          value={adminToken}
+          onChange={(event) => setAdminToken(event.target.value)}
+          className="mt-1 block rounded border border-gray-200 px-2 py-1 text-sm"
+        />
+      </label>
       <div className="space-y-1.5">
         {sources.map((s) => {
           const label = SOURCE_LABELS[s.source] ?? s.source.replace(/_/g, " ");

@@ -8,7 +8,7 @@
 -- * Keeps issued weather forecasts so backtesting can use the data that was
 --   actually available at prediction time.
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- gen_random_uuid() is built into the supported PostgreSQL versions (16+).
 
 -- =============================================================================
 -- Price observations

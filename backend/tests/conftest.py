@@ -56,3 +56,35 @@ def mock_db_session():
         yield session
 
     return _factory, session
+
+
+@pytest.fixture
+async def database():
+    """Run each integration test in an isolated PostgreSQL schema."""
+    import os
+    import uuid
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("Set TEST_DATABASE_URL to run PostgreSQL integration tests")
+    schema = f"test_{uuid.uuid4().hex}"
+    admin = create_async_engine(url)
+    async with admin.begin() as conn:
+        await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+    engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
+    try:
+        from unittest.mock import patch
+
+        from nordpool_predictor.database import run_migrations
+
+        with patch("nordpool_predictor.database.get_engine", return_value=engine):
+            await run_migrations()
+            yield engine
+    finally:
+        await engine.dispose()
+        async with admin.begin() as conn:
+            await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        await admin.dispose()

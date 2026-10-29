@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 
+from nordpool_predictor.api.auth import require_admin
 from nordpool_predictor.api.schemas.health import JobRunResponse, JobSummary
 from nordpool_predictor.database import get_session
 
@@ -62,7 +63,7 @@ def _resolve_job(path: str):  # noqa: ANN201
     return getattr(module, func_name)
 
 
-@router.post("/trigger/{job_name}")
+@router.post("/trigger/{job_name}", dependencies=[Depends(require_admin)])
 async def trigger_job(job_name: str) -> dict[str, str]:
     """Manually trigger a background job by name."""
     if job_name not in TRIGGER_MAP:
