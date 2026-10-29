@@ -2,8 +2,7 @@
 with spot prices to produce a full hourly price breakdown.
 
 All Energinet tariffs are fetched dynamically from DatahubPricelist using
-their official ChargeTypeCodes.  Fallback constants are kept only for the
-case where the API is unreachable.
+their official ChargeTypeCodes. Missing prices remain unavailable.
 
 Reference: https://www.energidataservice.dk/tso-electricity/datahubpricelist
 """
@@ -13,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -56,10 +55,10 @@ TRANSMISSION_TARIFF_CODE = "40000"  # Transmissions nettarif
 ELAFGIFT_CODE = "EA-001"  # Elafgift (electricity tax)
 NETTAB_CODES: dict[str, str] = {"DK1": "40021", "DK2": "40023"}
 
-# Fallback values if the API is unreachable (DKK/kWh excl. VAT, from Jan 2026)
-_FALLBACK_SYSTEM_TARIFF = 0.072
-_FALLBACK_TRANSMISSION_TARIFF = 0.043
-_FALLBACK_ELAFGIFT = 0.008
+
+class TariffUnavailableError(ValueError):
+    """The provider did not return a required tariff."""
+
 
 VAT_RATE = 0.25
 
@@ -68,7 +67,9 @@ def _extract_hourly_prices(record: dict[str, Any]) -> list[float]:
     """Extract Price1..Price24 from a DatahubPricelist record.
 
     If PriceN is null, the flat rate from Price1 applies."""
-    p1 = record.get("Price1") or 0.0
+    p1 = record.get("Price1")
+    if p1 is None:
+        raise TariffUnavailableError("Tariff is missing its base price")
     prices: list[float] = []
     for i in range(1, 25):
         val = record.get(f"Price{i}")
@@ -165,25 +166,21 @@ async def _fetch_latest_tariff(
         respect_rate_limit=False,
     )
     if not records:
-        return [0.0] * 24
+        raise TariffUnavailableError(f"No tariff found for {gln}/{charge_type_code}")
     result = _extract_hourly_prices(records[0])
     _cache_set(cache_key, result)
     return result
 
 
-async def _fetch_flat_tariff(code: str, fallback: float) -> float:
-    """Fetch a flat (non-time-of-use) Energinet tariff, with fallback."""
+async def _fetch_flat_tariff(code: str) -> float:
+    """Fetch an official flat tariff; a valid zero remains zero."""
     prices = await _fetch_latest_tariff(ENERGINET_GLN, code)
-    api_value = prices[0] if prices else 0.0
-    if api_value != 0.0:
-        return api_value
-    logger.warning("Using fallback for Energinet %s: %.4f DKK/kWh", code, fallback)
-    return fallback
+    return prices[0]
 
 
 async def _fetch_nettab_tariff(area: str) -> list[float]:
     """Fetch the Energinet nettabstarif (grid loss) for today or latest available."""
-    code = NETTAB_CODES.get(area, NETTAB_CODES["DK1"])
+    code = NETTAB_CODES[area]
     return await _fetch_latest_tariff(ENERGINET_GLN, code)
 
 
@@ -192,6 +189,9 @@ async def build_price_breakdown(
     gln: str,
     charge_type_code: str,
     spot_prices: dict[str, float],
+    spot_sources: dict[str, str] | None = None,
+    *,
+    day: date | None = None,
 ) -> list[dict[str, Any]]:
     """Build a 15-minute price breakdown covering today's Copenhagen calendar day.
 
@@ -208,15 +208,15 @@ async def build_price_breakdown(
     local hour (so a tariff valid from 18:00-19:00 local time applies to all
     four quarter-hour slots regardless of the underlying UTC offset).  All
     returned values are DKK/kWh."""
+    today_date = day or datetime.now(CPH_TZ).date()
     grid_tariff, nettab, system_tariff, transmission_tariff, elafgift = await asyncio.gather(
         _fetch_latest_tariff(gln, charge_type_code),
         _fetch_nettab_tariff(area),
-        _fetch_flat_tariff(SYSTEM_TARIFF_CODE, _FALLBACK_SYSTEM_TARIFF),
-        _fetch_flat_tariff(TRANSMISSION_TARIFF_CODE, _FALLBACK_TRANSMISSION_TARIFF),
-        _fetch_flat_tariff(ELAFGIFT_CODE, _FALLBACK_ELAFGIFT),
+        _fetch_flat_tariff(SYSTEM_TARIFF_CODE),
+        _fetch_flat_tariff(TRANSMISSION_TARIFF_CODE),
+        _fetch_flat_tariff(ELAFGIFT_CODE),
     )
 
-    today_date = datetime.now(CPH_TZ).date()
     start_utc = datetime.combine(today_date, dtime.min, tzinfo=CPH_TZ).astimezone(UTC)
     end_utc = datetime.combine(
         today_date + timedelta(days=1), dtime.min, tzinfo=CPH_TZ
@@ -229,28 +229,33 @@ async def build_price_breakdown(
         ts_local = ts_utc.astimezone(CPH_TZ)
         hour_index = ts_local.hour
         ts_key = ts_utc.isoformat()
-        spot = spot_prices.get(ts_key, 0.0)
+        spot = spot_prices.get(ts_key)
         grid = grid_tariff[hour_index]
         loss = nettab[hour_index]
         transport = system_tariff + transmission_tariff + loss
 
-        total_ex_vat = spot + grid + transport + elafgift
-        vat = total_ex_vat * VAT_RATE
+        total_ex_vat = spot + grid + transport + elafgift if spot is not None else None
+        vat = total_ex_vat * VAT_RATE if total_ex_vat is not None else None
 
         slots.append(
             {
                 "hour": ts_local.hour,
                 "minute": ts_local.minute,
                 "ts": ts_key,
-                "spot_price": round(spot, 6),
+                "spot_price": round(spot, 6) if spot is not None else None,
+                "spot_source": (
+                    (spot_sources or {}).get(ts_key, "actual") if spot is not None else "missing"
+                ),
                 "grid_tariff": round(grid, 6),
                 "system_tariff": round(system_tariff, 6),
                 "transmission_tariff": round(transmission_tariff, 6),
                 "grid_loss_tariff": round(loss, 6),
                 "electricity_tax": round(elafgift, 6),
-                "total_ex_vat": round(total_ex_vat, 6),
-                "vat": round(vat, 6),
-                "total_incl_vat": round(total_ex_vat + vat, 6),
+                "total_ex_vat": round(total_ex_vat, 6) if total_ex_vat is not None else None,
+                "vat": round(vat, 6) if vat is not None else None,
+                "total_incl_vat": round(total_ex_vat + vat, 6)
+                if total_ex_vat is not None
+                else None,
             }
         )
 
