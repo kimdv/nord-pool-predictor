@@ -101,6 +101,7 @@ async def _run_job(job_type: str, coro_fn: Any, *args: Any) -> None:
             exc,
         )
         await _finish_job(job_id, "failed", {"error": str(exc)})
+        raise
 
 
 async def job_ingest_prices() -> None:
@@ -136,14 +137,23 @@ async def job_ingest_crossborder() -> None:
     await _run_job("ingest_crossborder", ingest_crossborder_flows)
 
 
+async def _run_area_jobs(job_type: str, operation: Any) -> None:
+    areas = get_settings().area_codes
+    failed: list[str] = []
+    for i, area in enumerate(areas, 1):
+        logger.info("%s for area %s (%d/%d)", job_type, area, i, len(areas))
+        try:
+            await _run_job(job_type, operation, area)
+        except Exception:
+            failed.append(area)
+    if failed:
+        raise RuntimeError(f"{job_type} failed for areas: {', '.join(failed)}")
+
+
 async def job_refresh_forecast() -> None:
     from nordpool_predictor.ml.predict import run_forecast
 
-    settings = get_settings()
-    areas = settings.area_codes
-    for i, area in enumerate(areas, 1):
-        logger.info("Refreshing forecast for area %s (%d/%d)", area, i, len(areas))
-        await _run_job("refresh_forecast", run_forecast, area)
+    await _run_area_jobs("refresh_forecast", run_forecast)
 
 
 async def job_score_forecasts() -> None:
@@ -155,11 +165,7 @@ async def job_score_forecasts() -> None:
 async def job_retrain_model() -> None:
     from nordpool_predictor.ml.train import train_models
 
-    settings = get_settings()
-    areas = settings.area_codes
-    for i, area in enumerate(areas, 1):
-        logger.info("Retraining model for area %s (%d/%d)", area, i, len(areas))
-        await _run_job("retrain_model", train_models, area)
+    await _run_area_jobs("retrain_model", train_models)
 
 
 async def job_cleanup() -> None:
@@ -203,45 +209,55 @@ def start_scheduler() -> AsyncIOScheduler:
 
     _scheduler = AsyncIOScheduler(timezone=tz)
 
+    from nordpool_predictor.scheduler.queue import enqueue_job
+
     cron = CronTrigger
     _scheduler.add_job(
-        job_ingest_prices,
-        cron(hour=13, minute=15, timezone=tz),
+        enqueue_job,
+        args=["ingest_prices"],
+        trigger=cron(hour=13, minute=15, timezone=tz),
         id="ingest_prices",
     )
     _scheduler.add_job(
-        job_ingest_weather,
-        cron(hour=13, minute=20, timezone=tz),
+        enqueue_job,
+        args=["ingest_weather"],
+        trigger=cron(hour=13, minute=20, timezone=tz),
         id="ingest_weather",
     )
     _scheduler.add_job(
-        job_ingest_production,
-        cron(hour=17, minute=55, timezone=tz),
+        enqueue_job,
+        args=["ingest_production"],
+        trigger=cron(hour=17, minute=55, timezone=tz),
         id="ingest_production",
     )
     _scheduler.add_job(
-        job_ingest_crossborder,
-        cron(hour=13, minute=30, timezone=tz),
+        enqueue_job,
+        args=["ingest_crossborder"],
+        trigger=cron(hour=13, minute=30, timezone=tz),
         id="ingest_crossborder",
     )
     _scheduler.add_job(
-        job_refresh_forecast,
-        cron(hour=18, minute=5, timezone=tz),
+        enqueue_job,
+        args=["refresh_forecast"],
+        trigger=cron(hour=18, minute=5, timezone=tz),
         id="refresh_forecast",
     )
     _scheduler.add_job(
-        job_score_forecasts,
-        cron(hour=6, minute=0, timezone=tz),
+        enqueue_job,
+        args=["score_forecasts"],
+        trigger=cron(hour=6, minute=0, timezone=tz),
         id="score_forecasts",
     )
     _scheduler.add_job(
-        job_retrain_model,
-        cron(day_of_week="sun", hour=4, minute=0, timezone=tz),
+        enqueue_job,
+        args=["retrain_model"],
+        trigger=cron(day_of_week="sun", hour=4, minute=0, timezone=tz),
         id="retrain_model",
     )
     _scheduler.add_job(
-        job_cleanup,
-        cron(day_of_week="sun", hour=3, minute=0, timezone=tz),
+        enqueue_job,
+        args=["cleanup"],
+        trigger=cron(day_of_week="sun", hour=3, minute=0, timezone=tz),
         id="cleanup",
     )
 

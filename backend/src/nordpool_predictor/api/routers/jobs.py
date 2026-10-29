@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
@@ -9,13 +9,12 @@ from sqlalchemy import text
 from nordpool_predictor.api.auth import require_admin
 from nordpool_predictor.api.schemas.health import JobRunResponse, JobSummary
 from nordpool_predictor.database import get_session
+from nordpool_predictor.scheduler.queue import JOB_NAMES, enqueue_job
 
 BATCH_WINDOW_MINUTES = 10
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
-
-_running_triggers: set[str] = set()
 
 
 @router.get("", response_model=list[JobRunResponse])
@@ -44,70 +43,55 @@ async def list_jobs(
     ]
 
 
-TRIGGER_MAP: dict[str, str] = {
-    "ingest_prices": "nordpool_predictor.scheduler.jobs:job_ingest_prices",
-    "ingest_weather": "nordpool_predictor.scheduler.jobs:job_ingest_weather",
-    "ingest_production": "nordpool_predictor.scheduler.jobs:job_ingest_production",
-    "ingest_crossborder": "nordpool_predictor.scheduler.jobs:job_ingest_crossborder",
-    "refresh_forecast": "nordpool_predictor.scheduler.jobs:job_refresh_forecast",
-    "score_forecasts": "nordpool_predictor.scheduler.jobs:job_score_forecasts",
-    "retrain_model": "nordpool_predictor.scheduler.jobs:job_retrain_model",
-}
-
-
-def _resolve_job(path: str):  # noqa: ANN201
-    module_path, func_name = path.rsplit(":", 1)
-    import importlib
-
-    module = importlib.import_module(module_path)
-    return getattr(module, func_name)
-
-
-@router.post("/trigger/{job_name}", dependencies=[Depends(require_admin)])
+@router.post("/trigger/{job_name}", status_code=202, dependencies=[Depends(require_admin)])
 async def trigger_job(job_name: str) -> dict[str, str]:
-    """Manually trigger a background job by name."""
-    if job_name not in TRIGGER_MAP:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Unknown job: {job_name}. Available: {list(TRIGGER_MAP.keys())}",
+    if job_name not in JOB_NAMES:
+        raise HTTPException(status_code=404, detail=f"Unknown job: {job_name}")
+    job_id = await enqueue_job(job_name)
+    if job_id is None:
+        raise HTTPException(status_code=409, detail=f"Job {job_name} is already queued or running")
+    return {"status": "pending", "job": job_name, "job_id": str(job_id)}
+
+
+@router.get("/requests/{job_id}")
+async def get_job_request(job_id: UUID):
+    async with get_session() as session:
+        result = await session.execute(
+            text("SELECT * FROM job_requests WHERE job_id = :id"), {"id": job_id}
         )
-
-    if job_name in _running_triggers:
-        raise HTTPException(status_code=409, detail=f"Job {job_name} is already running")
-
-    job_fn = _resolve_job(TRIGGER_MAP[job_name])
-
-    async def _run() -> None:
-        _running_triggers.add(job_name)
-        try:
-            await job_fn()
-        except Exception:
-            logger.exception("Manually triggered job %s failed", job_name)
-        finally:
-            _running_triggers.discard(job_name)
-
-    asyncio.create_task(_run())
-    logger.info("Manually triggered job: %s", job_name)
-
-    return {"status": "triggered", "job": job_name}
+        row = result.mappings().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job request not found")
+    return dict(row)
 
 
 @router.get("/running")
 async def running_jobs() -> dict[str, list[str]]:
-    """Return currently running manually-triggered jobs."""
-    return {"running": sorted(_running_triggers)}
+    async with get_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT job_name FROM job_requests WHERE status IN ('pending', 'running') "
+                "ORDER BY job_name"
+            )
+        )
+        return {"running": list(result.scalars())}
 
 
 _SUMMARY_SQL = f"""
-WITH latest AS (
+WITH activity AS (
+    SELECT job_type, status, started_at, finished_at FROM job_runs
+    UNION ALL
+    SELECT job_name, 'running', COALESCE(started_at, created_at), finished_at
+    FROM job_requests WHERE status IN ('pending', 'running')
+), latest AS (
     SELECT job_type, MAX(started_at) AS max_started_at
-    FROM job_runs
+    FROM activity
     WHERE started_at IS NOT NULL
     GROUP BY job_type
 ),
 batch AS (
     SELECT jr.job_type, jr.status, jr.started_at, jr.finished_at
-    FROM job_runs jr
+    FROM activity jr
     JOIN latest l ON l.job_type = jr.job_type
     WHERE jr.started_at >= l.max_started_at - interval '{BATCH_WINDOW_MINUTES} minutes'
 )
