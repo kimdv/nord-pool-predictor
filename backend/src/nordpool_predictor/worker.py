@@ -52,8 +52,12 @@ async def run_with_worker_lock(operation: Callable[[AsyncConnection], Awaitable[
         ).scalar()
         if not owns_lock:
             raise RuntimeError("Worker advisory lock session lost")
-        await operation(conn)
-        await conn.commit()
+        try:
+            await operation(conn)
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
     return True
 
 
@@ -180,4 +184,6 @@ async def run_worker() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    from nordpool_predictor.worker import run_worker
+
     asyncio.run(run_worker())

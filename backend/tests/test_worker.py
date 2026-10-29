@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+import runpy
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from nordpool_predictor.scheduler.queue import claim_job, enqueue_job
-from nordpool_predictor.worker import execute_next, worker_lock
+from nordpool_predictor.worker import execute_next, run_with_worker_lock, worker_lock
 
 
 async def test_concurrent_submissions_are_deduplicated_and_claimed_once(database):
@@ -25,6 +27,38 @@ async def test_only_one_worker_can_own_background_execution(database):
                 pytest.fail("A second worker acquired the lock")
     async with worker_lock():
         pass
+
+
+async def test_failed_lock_owned_operation_is_rolled_back(database):
+    async with worker_lock():
+
+        async def fail(connection):
+            await connection.execute(text("SELECT 1 / 0"))
+
+        with pytest.raises(DBAPIError):
+            await run_with_worker_lock(fail)
+
+        async def succeed(connection):
+            await connection.execute(text("SELECT 1"))
+
+        assert await run_with_worker_lock(succeed)
+
+
+def test_module_entrypoint_uses_canonical_worker():
+    import nordpool_predictor.worker as worker_module
+
+    result = object()
+    with (
+        patch(
+            "nordpool_predictor.worker.run_worker",
+            new=MagicMock(return_value=result),
+        ) as run_worker,
+        patch("asyncio.run") as asyncio_run,
+    ):
+        runpy.run_path(worker_module.__file__, run_name="__main__")
+
+    run_worker.assert_called_once_with()
+    asyncio_run.assert_called_once_with(result)
 
 
 async def test_worker_stops_in_flight_work_after_lock_session_ends(database):
