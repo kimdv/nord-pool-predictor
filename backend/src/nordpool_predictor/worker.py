@@ -15,13 +15,13 @@ from nordpool_predictor.scheduler.queue import claim_job, enqueue_job, finish_re
 
 logger = logging.getLogger(__name__)
 WORKER_LOCK = 73640101
+LOCK_CHECK_INTERVAL = 1
 
 
 @asynccontextmanager
 async def worker_lock():
     from nordpool_predictor.database import get_engine
 
-    # Keep the physical connection checked out until all work has stopped.
     async with get_engine().connect() as conn:
         acquired = (
             await conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": WORKER_LOCK})
@@ -29,11 +29,56 @@ async def worker_lock():
         await conn.commit()
         if not acquired:
             raise RuntimeError("Another backend worker is already running")
+        backend_pid = (await conn.execute(text("SELECT pg_backend_pid()"))).scalar()
+        owner_task = asyncio.current_task()
+        lock_error: list[Exception] = []
+
+        async def monitor_lock() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(LOCK_CHECK_INTERVAL)
+                    owns_lock = (
+                        await conn.execute(
+                            text("""
+                            SELECT pg_backend_pid() = :pid AND EXISTS (
+                                SELECT 1 FROM pg_locks
+                                WHERE locktype = 'advisory'
+                                  AND pid = CAST(:pid AS integer)
+                                  AND classid = 0::oid
+                                  AND objid = CAST(:key AS oid)
+                                  AND objsubid = 1
+                                  AND granted
+                            )
+                            """),
+                            {"pid": backend_pid, "key": WORKER_LOCK},
+                        )
+                    ).scalar()
+                    if not owns_lock:
+                        raise RuntimeError("Worker advisory lock session lost")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                lock_error.append(exc)
+                if owner_task is not None:
+                    owner_task.cancel()
+
+        monitor = asyncio.create_task(monitor_lock())
         try:
-            yield
+            try:
+                yield conn
+            except asyncio.CancelledError:
+                if lock_error:
+                    raise RuntimeError("Worker advisory lock session lost") from lock_error[0]
+                raise
         finally:
-            await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})
-            await conn.commit()
+            monitor.cancel()
+            await asyncio.gather(monitor, return_exceptions=True)
+            if not lock_error:
+                try:
+                    await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK})
+                    await conn.commit()
+                except Exception:
+                    logger.exception("Failed to release worker advisory lock")
 
 
 async def execute_next() -> bool:

@@ -27,6 +27,39 @@ async def test_only_one_worker_can_own_background_execution(database):
         pass
 
 
+async def test_worker_stops_in_flight_work_after_lock_session_ends(database):
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+    backend_pids = []
+
+    async def hold_worker_lock():
+        async with worker_lock() as lock_conn:
+            backend_pid = (await lock_conn.execute(text("SELECT pg_backend_pid()"))).scalar()
+            backend_pids.append(backend_pid)
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    with patch("nordpool_predictor.database.get_engine", return_value=database):
+        task = asyncio.create_task(hold_worker_lock())
+        await entered.wait()
+        async with database.connect() as conn:
+            terminated = (
+                await conn.execute(
+                    text("SELECT pg_terminate_backend(:pid)"), {"pid": backend_pids[0]}
+                )
+            ).scalar()
+            await conn.commit()
+        assert terminated
+        with pytest.raises(RuntimeError, match="lock session lost"):
+            await asyncio.wait_for(task, timeout=5)
+        assert cancelled.is_set()
+        async with worker_lock():
+            pass
+
+
 async def test_worker_persists_failure_and_accepts_a_later_retry(database):
     job_id = await enqueue_job("ingest_prices")
     with patch(
