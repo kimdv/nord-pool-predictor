@@ -16,6 +16,7 @@ from sqlalchemy import text
 
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
+from nordpool_predictor.ml.artifacts import write_manifest
 from nordpool_predictor.ml.features import (
     HORIZON_STEP_FEATURE,
     TARGET,
@@ -151,6 +152,7 @@ def _train_sync(
 
     logger.info("Training final quantile models (p10/p50/p90) for %s", area)
     trained_models: dict[str, lgb.LGBMRegressor] = {}
+    artifact_paths: dict[str, str] = {}
     for q_name, q_val in QUANTILES.items():
         final_params: dict = {
             "objective": "quantile",
@@ -163,7 +165,10 @@ def _train_sync(
         model.fit(X, y)
 
         artifact = model_dir / f"lgbm-{area}-{q_name}-{time_str}.joblib"
-        joblib.dump(model, artifact)
+        temporary = artifact.with_suffix(".joblib.tmp")
+        joblib.dump(model, temporary)
+        temporary.replace(artifact)
+        artifact_paths[q_name] = artifact.name
         trained_models[q_name] = model
         logger.info("Saved %s → %s", q_name, artifact)
 
@@ -187,7 +192,10 @@ def _train_sync(
         "n_purged_samples": len(X) - len(X_development) - len(X_holdout),
     }
 
-    return model_version, model_dir_str, metrics, trained_models, now
+    manifest = write_manifest(
+        model_dir, model_version, area, artifact_paths, trained_models["p50"]
+    )
+    return model_version, manifest, metrics, trained_models, now
 
 
 async def train_models(area: str) -> str:

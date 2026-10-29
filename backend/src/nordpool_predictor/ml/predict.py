@@ -5,14 +5,13 @@ import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
 from nordpool_predictor.database import get_session
+from nordpool_predictor.ml.artifacts import load_models
 from nordpool_predictor.ml.features import (
     TARGET,
     add_calendar_features,
@@ -45,24 +44,7 @@ def _load_models(
     artifact_path: str,
     area: str,
 ) -> dict[str, object]:
-    """Load the three quantile model artifacts from disk."""
-    # model_version is "lgbm-{area}-{time_str}" where time_str may be
-    # "20260406" (old) or "20260406-134500" (new).  Extract everything
-    # after the area prefix.
-    prefix = f"lgbm-{area}-"
-    time_str = (
-        model_version[len(prefix) :]
-        if model_version.startswith(prefix)
-        else model_version.rsplit("-", 1)[-1]
-    )
-    models: dict[str, object] = {}
-    for q in ("p10", "p50", "p90"):
-        path = Path(artifact_path) / f"lgbm-{area}-{q}-{time_str}.joblib"
-        if not path.exists():
-            raise FileNotFoundError(f"Model artifact not found: {path}")
-        models[q] = joblib.load(path)
-        logger.info("Loaded %s model from %s", q, path)
-    return models
+    return load_models(model_version, artifact_path, area)
 
 
 async def select_usable_model(
@@ -206,8 +188,6 @@ async def run_forecast(
 
     try:
         # 4. Build features (sync DB work -- run in thread) ------------------
-        import asyncio
-
         X, target_ts = await asyncio.to_thread(
             _build_forecast_features,
             area,
@@ -231,9 +211,9 @@ async def run_forecast(
         X_aligned = X.reindex(columns=expected_features, fill_value=np.nan)
 
         # 5. Predict ---------------------------------------------------------
-        pred_p10 = models["p10"].predict(X_aligned)  # type: ignore[union-attr]
-        pred_p50 = models["p50"].predict(X_aligned)  # type: ignore[union-attr]
-        pred_p90 = models["p90"].predict(X_aligned)  # type: ignore[union-attr]
+        pred_p10, pred_p50, pred_p90 = await asyncio.to_thread(
+            _predict_quantiles, models, X_aligned
+        )
 
         # Independent quantile models can produce crossings (e.g. p10 > p50).
         # Sort per row so the band is always coherent.
@@ -302,3 +282,7 @@ async def run_forecast(
         raise
 
     return run_id
+
+
+def _predict_quantiles(models: dict, features: pd.DataFrame) -> tuple:
+    return tuple(models[q].predict(features) for q in ("p10", "p50", "p90"))
