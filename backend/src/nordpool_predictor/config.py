@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://nordpool:nordpool@localhost:5432/nordpool"
     cors_allowed_origins: str = "http://localhost:3000"
     model_dir: str = "/data/models"
+    admin_api_token: SecretStr | None = None
 
     retention_weather_obs_days: int = 180
     retention_weather_fc_days: int = 365

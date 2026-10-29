@@ -272,3 +272,14 @@ npm run dev
 ## License
 
 [MIT](LICENSE)
+
+### Administrative job access
+
+Set `ADMIN_API_TOKEN` to a strong random secret in the backend environment (or the
+Compose environment). Manual job triggers are disabled when it is unset. Requests
+to `POST /api/jobs/trigger/{job_name}` require `Authorization: Bearer <token>`.
+Enter the token in the dashboard’s administrator field before starting a job; it
+is kept only in page memory.
+The web proxy forwards caller credentials and never injects a privileged token.
+Use HTTPS when accessing administrative actions over a network. Public read
+endpoints and scheduled jobs do not require this token.

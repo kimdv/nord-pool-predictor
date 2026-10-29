@@ -66,7 +66,10 @@ export async function POST(
   const url = `${BACKEND}/api/${joined}`;
 
   try {
-    const res = await fetch(url, { method: "POST", cache: "no-store" });
+    const headers = new Headers();
+    const authorization = request.headers.get("authorization");
+    if (authorization) headers.set("authorization", authorization);
+    const res = await fetch(url, { method: "POST", headers, cache: "no-store" });
     const contentType = res.headers.get("content-type") ?? "";
 
     if (!contentType.includes("application/json")) {
