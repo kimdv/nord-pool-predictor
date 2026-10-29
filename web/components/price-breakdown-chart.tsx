@@ -15,6 +15,8 @@ import {
 } from "recharts";
 import type { AreaCode } from "@/components/area-switcher";
 import ChartSkeleton from "./chart-skeleton";
+import RequestError from "./request-error";
+import { fetchJson } from "@/lib/client-api";
 
 interface SlotBreakdown {
   hour: number;
@@ -86,6 +88,8 @@ export default function PriceBreakdownChart({
 }: Props) {
   const [data, setData] = useState<SlotBreakdown[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+  const [retryVersion, setRetryVersion] = useState(0);
   const [disabled, setDisabled] = useState<Set<CategoryKey>>(new Set());
   const [prevKey, setPrevKey] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -94,31 +98,38 @@ export default function PriceBreakdownChart({
   if (currentKey !== prevKey) {
     setPrevKey(currentKey);
     setData(null);
+    setError(false);
     setLoading(currentKey !== null);
   }
 
   useEffect(() => {
     if (!gln || !code) return;
 
-    let cancelled = false;
+    const controller = new AbortController();
+    setLoading(true);
 
-    fetch(
+    fetchJson<{ slots: SlotBreakdown[] }>(
       `/api/backend/tariffs/breakdown/${area}?gln=${encodeURIComponent(gln)}&code=${encodeURIComponent(code)}`,
+      { signal: controller.signal },
     )
-      .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
-        if (cancelled) return;
-        setData(json?.slots ?? null);
-        setLoading(false);
+        if (controller.signal.aborted) return;
+        setData(json.slots);
+        setError(false);
       })
       .catch(() => {
-        if (!cancelled) setLoading(false);
+        if (!controller.signal.aborted) setError(true);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [area, gln, code, refreshVersion]);
+  }, [area, gln, code, refreshVersion, retryVersion]);
+
+  const retry = useCallback(() => setRetryVersion((version) => version + 1), []);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => setNowMs(Date.now()), 30_000);
@@ -178,8 +189,12 @@ export default function PriceBreakdownChart({
     );
   }
 
-  if (loading) {
+  if (loading && !data) {
     return <ChartSkeleton height="h-72" />;
+  }
+
+  if (error && (!data || data.length === 0)) {
+    return <RequestError message="Kunne ikke hente prissammensætningen." onRetry={retry} retrying={loading} />;
   }
 
   if (!data || data.length === 0) {
@@ -218,6 +233,7 @@ export default function PriceBreakdownChart({
         </div>
       </div>
 
+      {error && <RequestError message="Kunne ikke opdatere prissammensætningen. De senest hentede priser vises." onRetry={retry} retrying={loading} />}
       <div className="h-72">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart

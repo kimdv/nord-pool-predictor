@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { fetchJson } from "@/lib/client-api";
+import RequestError from "./request-error";
 
 interface GridCompany {
   gln: string;
@@ -59,7 +61,11 @@ export default function GridCompanySelector({
   onSelect: (sel: Selection) => void;
 }) {
   const [companies, setCompanies] = useState<GridCompany[]>([]);
+  const [companiesLoading, setCompaniesLoading] = useState(true);
+  const [companiesError, setCompaniesError] = useState(false);
+  const [companiesRetryVersion, setCompaniesRetryVersion] = useState(0);
   const [codes, setCodes] = useState<TariffCode[]>([]);
+  const [codesError, setCodesError] = useState(false);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<"company" | "code">("company");
@@ -77,11 +83,22 @@ export default function GridCompanySelector({
   }, []);
 
   useEffect(() => {
-    fetch("/api/backend/tariffs/grid-companies")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data: GridCompany[]) => setCompanies(data))
-      .catch(() => {});
-  }, []);
+    const controller = new AbortController();
+    setCompaniesLoading(true);
+    fetchJson<GridCompany[]>("/api/backend/tariffs/grid-companies", { signal: controller.signal })
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setCompanies(data);
+        setCompaniesError(false);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCompaniesError(true);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCompaniesLoading(false);
+      });
+    return () => controller.abort();
+  }, [companiesRetryVersion]);
 
   useEffect(() => {
     function onClick(e: MouseEvent) {
@@ -112,14 +129,14 @@ export default function GridCompanySelector({
     tariffRequestRef.current = controller;
     setPendingGln({ gln: c.gln, name: c.name });
     setCodes([]);
+    setCodesError(false);
     setStep("code");
     setQuery("");
     setLoading(true);
-    fetch(`/api/backend/tariffs/grid-companies/${c.gln}/codes`, {
+    fetchJson<TariffCode[]>(`/api/backend/tariffs/grid-companies/${c.gln}/codes`, {
       signal: controller.signal,
     })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data: TariffCode[]) => {
+      .then((data) => {
         if (controller.signal.aborted) return;
         setCodes(data);
         setLoading(false);
@@ -132,7 +149,10 @@ export default function GridCompanySelector({
         }
       })
       .catch(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted) {
+          setCodesError(true);
+          setLoading(false);
+        }
       });
   }
 
@@ -215,7 +235,11 @@ export default function GridCompanySelector({
                   className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm text-gray-800 placeholder-gray-400 focus:border-blue-300 focus:outline-none focus:ring-1 focus:ring-blue-300"
                 />
               </div>
-              <ul className="max-h-64 overflow-y-auto py-1">
+              {companiesError ? (
+                <RequestError message="Kunne ikke hente netselskaber." onRetry={() => setCompaniesRetryVersion((version) => version + 1)} retrying={companiesLoading} />
+              ) : companiesLoading ? (
+                <p className="px-4 py-3 text-sm text-gray-400">Henter netselskaber...</p>
+              ) : <ul className="max-h-64 overflow-y-auto py-1">
                 {filtered.length === 0 && (
                   <li className="px-4 py-3 text-sm text-gray-400">
                     Ingen resultater
@@ -231,7 +255,7 @@ export default function GridCompanySelector({
                     </button>
                   </li>
                 ))}
-              </ul>
+              </ul>}
               <div className="px-4 py-2 border-t border-gray-100 text-xs text-gray-400">
                 Find dit netselskab på din elregning
               </div>
@@ -247,8 +271,11 @@ export default function GridCompanySelector({
                 <div className="px-4 py-6 text-center text-sm text-gray-400">
                   Henter tariffer...
                 </div>
+              ) : codesError ? (
+                <RequestError message="Kunne ikke hente tariffer." onRetry={() => { if (pendingGln) handlePickCompany(pendingGln); }} />
               ) : (
                 <ul className="max-h-64 overflow-y-auto py-1">
+                  {codes.length === 0 && <li className="px-4 py-3 text-sm text-gray-400">Ingen tariffer tilgængelige for dette netselskab.</li>}
                   {codes.map((t) => (
                     <li key={t.code}>
                       <button

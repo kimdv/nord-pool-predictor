@@ -7,6 +7,7 @@ import ChartSkeleton from "./chart-skeleton";
 import PriceChart from "./price-chart";
 import AccuracyCard from "./accuracy-card";
 import BenchmarkTable from "./benchmark-table";
+import RequestError from "./request-error";
 import type { ForecastResponse } from "@/lib/api";
 
 export default function AreaCharts({
@@ -18,14 +19,14 @@ export default function AreaCharts({
   refreshVersion?: number;
   onForecast?: (forecast: ForecastResponse | null) => void;
 }) {
-  const { data, loading } = useAreaData(area, refreshVersion);
+  const { data, loading, errors, retry } = useAreaData(area, refreshVersion);
 
   const forecast = data?.forecast ?? null;
   useEffect(() => {
     onForecast?.(forecast);
   }, [forecast, onForecast]);
 
-  if (loading || !data) {
+  if (!data) {
     return (
       <div className="space-y-6">
         <ChartSkeleton />
@@ -36,9 +37,16 @@ export default function AreaCharts({
   }
 
   return (
-    <div className="space-y-6">
-      <PriceChart data={data.combined} productionHorizon={data.productionHorizon} />
-      <AccuracyCard records={data.accuracy} />
+    <div className="space-y-6" aria-busy={loading}>
+      {(errors.prices || errors.forecast) && (
+        <RequestError message={[errors.prices, errors.forecast].filter(Boolean).join(" ")} onRetry={retry} retrying={loading} />
+      )}
+      {(!(errors.prices || errors.forecast) || data.combined.length > 0) && (
+        <PriceChart data={data.combined} productionHorizon={data.productionHorizon} />
+      )}
+      {errors.accuracy && <RequestError message={errors.accuracy} onRetry={retry} retrying={loading} />}
+      {(!errors.accuracy || data.accuracy.length > 0) && <AccuracyCard records={data.accuracy} />}
+      {errors.benchmarks && <RequestError message={errors.benchmarks} onRetry={retry} retrying={loading} />}
       {data.benchmarks && <BenchmarkTable benchmarks={data.benchmarks} />}
     </div>
   );

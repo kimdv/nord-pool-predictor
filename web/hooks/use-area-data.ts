@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { fetchJson, fetchOptionalJson } from "@/lib/client-api";
 import type { AreaCode } from "@/components/area-switcher";
 import type {
   ForecastResponse,
@@ -26,15 +27,11 @@ export interface AreaDetailData {
   benchmarks: BenchmarkResponse | null;
 }
 
-async function fetchJson<T>(url: string): Promise<T | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
+interface LoadedAreaData extends AreaDetailData {
+  prices: PricesResponse | null;
 }
+
+type AreaDataErrors = Partial<Record<"prices" | "forecast" | "accuracy" | "benchmarks", string>>;
 
 function endOfTomorrow(): string {
   const end = new Date();
@@ -74,54 +71,74 @@ function buildCombinedData(
 }
 
 export function useAreaData(area: AreaCode, refreshVersion = 0) {
-  const [data, setData] = useState<AreaDetailData | null>(null);
+  const [data, setData] = useState<LoadedAreaData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [errors, setErrors] = useState<AreaDataErrors>({});
+  const [retryVersion, setRetryVersion] = useState(0);
   const [prevArea, setPrevArea] = useState(area);
+  const retry = useCallback(() => setRetryVersion((version) => version + 1), []);
 
   if (area !== prevArea) {
     setPrevArea(area);
     setLoading(true);
     setData(null);
+    setErrors({});
   }
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const options = { signal: controller.signal };
 
     const now = new Date();
     const start = new Date(now.getTime() - 48 * 3600_000).toISOString();
     const end = endOfTomorrow();
 
     async function load() {
-      const [prices, forecast, accuracy, benchmarks] = await Promise.all([
+      setLoading(true);
+      const [prices, forecast, accuracy, benchmarks] = await Promise.allSettled([
         fetchJson<PricesResponse>(
           `/api/backend/prices/${area}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+          options,
         ),
-        fetchJson<ForecastResponse>(`/api/backend/forecasts/${area}/latest`),
+        fetchOptionalJson<ForecastResponse>(`/api/backend/forecasts/${area}/latest`, options),
         fetchJson<AccuracyRecord[]>(
           `/api/backend/forecasts/${area}/accuracy?limit=5`,
+          options,
         ),
-        fetchJson<BenchmarkResponse>(
+        fetchOptionalJson<BenchmarkResponse>(
           `/api/backend/forecasts/${area}/benchmarks`,
+          options,
         ),
       ]);
 
-      if (cancelled) return;
+      if (controller.signal.aborted) return;
 
-      setData({
-        combined: buildCombinedData(prices, forecast),
-        forecast,
-        productionHorizon: forecast?.production_forecast_horizon ?? null,
-        accuracy: accuracy ?? [],
-        benchmarks,
+      const nextErrors: AreaDataErrors = {};
+      if (prices.status === "rejected") nextErrors.prices = "Kunne ikke hente spotpriser.";
+      if (forecast.status === "rejected") nextErrors.forecast = "Kunne ikke hente prognosen.";
+      if (accuracy.status === "rejected") nextErrors.accuracy = "Kunne ikke hente prognosenøjagtighed.";
+      if (benchmarks.status === "rejected") nextErrors.benchmarks = "Kunne ikke hente model-sammenligningen.";
+      setErrors(nextErrors);
+      setData((previous) => {
+        const nextPrices = prices.status === "fulfilled" ? prices.value : previous?.prices ?? null;
+        const nextForecast = forecast.status === "fulfilled" ? forecast.value : previous?.forecast ?? null;
+        return {
+          prices: nextPrices,
+          combined: buildCombinedData(nextPrices, nextForecast),
+          forecast: nextForecast,
+          productionHorizon: nextForecast?.production_forecast_horizon ?? null,
+          accuracy: accuracy.status === "fulfilled" ? accuracy.value : previous?.accuracy ?? [],
+          benchmarks: benchmarks.status === "fulfilled" ? benchmarks.value : previous?.benchmarks ?? null,
+        };
       });
       setLoading(false);
     }
 
     load();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [area, refreshVersion]);
+  }, [area, refreshVersion, retryVersion]);
 
-  return { data, loading };
+  return { data, loading, errors, retry };
 }
