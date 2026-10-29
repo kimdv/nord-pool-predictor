@@ -93,11 +93,14 @@ async def price_breakdown(
         rows = result.mappings().all()
 
     spot_by_ts: dict[str, float] = {}
+    spot_sources: dict[str, str] = {}
     for row in rows:
         ts: datetime = row["ts"]
         spot_by_ts[ts.isoformat()] = row["price_dkk_kwh"]
+        spot_sources[ts.isoformat()] = "actual"
 
-    if len(spot_by_ts) < 96:
+    expected_slots = int((today_end - today_start).total_seconds() // 900)
+    if len(spot_by_ts) < expected_slots:
         async with get_session() as session:
             run_result = await session.execute(
                 text("SELECT run_id FROM latest_forecast_runs WHERE area = :area"),
@@ -118,10 +121,15 @@ async def price_breakdown(
                 )
                 for fc_row in fc_result.mappings().all():
                     fc_ts: datetime = fc_row["ts"]
-                    spot_by_ts.setdefault(fc_ts.isoformat(), fc_row["predicted_price_dkk_kwh"])
+                    key = fc_ts.isoformat()
+                    if key not in spot_by_ts:
+                        spot_by_ts[key] = fc_row["predicted_price_dkk_kwh"]
+                        spot_sources[key] = "forecast"
 
     try:
-        slots = await build_price_breakdown(area, gln, code, spot_by_ts)
+        slots = await build_price_breakdown(
+            area, gln, code, spot_by_ts, spot_sources, day=today_date
+        )
     except Exception:
         logger.exception("Failed to build price breakdown")
         raise HTTPException(status_code=502, detail="Could not build price breakdown")

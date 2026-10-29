@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from datetime import time as dtime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -9,6 +10,7 @@ from sqlalchemy import text
 
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
+from nordpool_predictor.tariffs import CPH_TZ
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ha", tags=["homeassistant"])
@@ -24,8 +26,12 @@ async def ha_sensor(area: str) -> dict[str, Any]:
     now = datetime.now(UTC)
     current_slot = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
     next_slot = current_slot + timedelta(minutes=15)
-    today_start = current_slot.replace(hour=0, minute=0)
-    today_end = today_start + timedelta(days=1)
+    today = now.astimezone(CPH_TZ).date()
+    today_start = datetime.combine(today, dtime.min, tzinfo=CPH_TZ).astimezone(UTC)
+    today_end = datetime.combine(today + timedelta(days=1), dtime.min, tzinfo=CPH_TZ).astimezone(
+        UTC
+    )
+    expected_slots = int((today_end - today_start).total_seconds() // 900)
 
     async with get_session() as session:
         run_result = await session.execute(
@@ -33,11 +39,8 @@ async def ha_sensor(area: str) -> dict[str, Any]:
             {"area": area},
         )
         run = run_result.mappings().first()
-        if run is None:
-            raise HTTPException(status_code=404, detail=f"No forecast available for area {area}")
-
-        run_id = run["run_id"]
-        model_version = run["model_version"]
+        run_id = run["run_id"] if run else None
+        model_version = run["model_version"] if run else None
 
         actual_result = await session.execute(
             text(
@@ -61,8 +64,8 @@ async def ha_sensor(area: str) -> dict[str, Any]:
             row["ts"]: row["predicted_price_dkk_kwh"] for row in fc_current_result.mappings().all()
         }
 
-        current_price = actuals.get(current_slot) or fc_prices.get(current_slot)
-        next_slot_price = actuals.get(next_slot) or fc_prices.get(next_slot)
+        current_price = actuals.get(current_slot, fc_prices.get(current_slot))
+        next_slot_price = actuals.get(next_slot, fc_prices.get(next_slot))
 
         today_result = await session.execute(
             text(
@@ -88,9 +91,10 @@ async def ha_sensor(area: str) -> dict[str, Any]:
             today_prices_map.setdefault(row["ts"], row["predicted_price_dkk_kwh"])
 
         today_values = list(today_prices_map.values())
-        today_min = min(today_values) if today_values else None
-        today_max = max(today_values) if today_values else None
-        today_average = round(sum(today_values) / len(today_values), 4) if today_values else None
+        today_complete = len(today_values) == expected_slots
+        today_min = min(today_values) if today_complete else None
+        today_max = max(today_values) if today_complete else None
+        today_average = round(sum(today_values) / len(today_values), 4) if today_complete else None
 
         forecast_result = await session.execute(
             text(
@@ -113,7 +117,7 @@ async def ha_sensor(area: str) -> dict[str, Any]:
     forecast_quality = quality_row["quality_label"] if quality_row else None
     mae_24h = quality_row["mae_24h"] if quality_row else None
 
-    state = current_price if current_price is not None else 0.0
+    state = current_price if current_price is not None else "unavailable"
 
     return {
         "state": state,
@@ -121,6 +125,15 @@ async def ha_sensor(area: str) -> dict[str, Any]:
             "unit_of_measurement": "DKK/kWh",
             "area": area,
             "current_price": current_price,
+            "available": current_price is not None,
+            "current_price_source": (
+                "actual"
+                if current_slot in actuals
+                else "forecast"
+                if current_slot in fc_prices
+                else "missing"
+            ),
+            "today_coverage": len(today_values) / expected_slots,
             "next_slot_price": next_slot_price,
             "today_min": today_min,
             "today_max": today_max,
