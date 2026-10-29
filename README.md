@@ -15,29 +15,22 @@ The system ingests hourly spot prices, weather forecasts, wind/solar production 
 
 ### Architecture
 
+```text
+Energi Data Service ──┐
+                     ├──▶ Worker (scheduler, ingestion, LightGBM)
+Open-Meteo ──────────┘                    │
+                                          ▼
+                             PostgreSQL (data + durable jobs)
+                                          ▲
+                                          │
+                             FastAPI :8000 (reads + job submission)
+                                      ▲       ▲
+                                      │       │
+                               Next.js :3000  Home Assistant
 ```
-┌─────────────────────┐     ┌─────────────────────────────────────┐
-│  Energi Data Service │────▶│           Docker Host               │
-│  (prices, production)│     │  ┌────────────────────────────────┐ │
-└─────────────────────┘     │  │ nordpool-app (FastAPI)          │ │
-                            │  │  • APScheduler (daily jobs)     │ │
-┌─────────────────────┐     │  │  • LightGBM ML pipeline        │ │
-│     Open-Meteo       │────▶│  │  • REST API on :8000           │ │
-│  (weather forecasts) │     │  └──────────┬─────────────────────┘ │
-└─────────────────────┘     │             │                        │
-                            │  ┌──────────▼───────┐                │
-                            │  │ PostgreSQL 16     │                │
-                            │  └──────────────────┘                │
-                            └─────────────────────────────────────┘
-                                       │
-                        ┌──────────────┴──────────────┐
-                        ▼                             ▼
-                 ┌─────────────┐             ┌──────────────┐
-                 │  Next.js    │             │   Home       │
-                 │  Dashboard  │             │   Assistant  │
-                 │  :3000      │             │              │
-                 └─────────────┘             └──────────────┘
-```
+
+The API fetches tariff data on demand. The worker owns all scheduled and manually
+queued ingestion, training, and forecast execution.
 
 ### Data Sources
 
@@ -373,3 +366,16 @@ successful forecast with future values. Docker uses readiness for dependency
 health. The existing `/api/health` remains a detailed dashboard status endpoint.
 Failed or running forecasts do not advance successful forecast freshness, and
 `last_forecast_at` is the oldest latest-success timestamp across configured areas.
+
+### Price availability
+
+Zero is a valid price. Actual zero/negative prices take precedence over forecasts.
+Home Assistant reports `state: "unavailable"` when the current slot has neither
+an actual nor a forecast; `available`, `current_price_source`, and `today_coverage`
+explain the data available. Daily aggregates require a complete Copenhagen local
+day, including its 92/100 slots at daylight-saving transitions.
+
+Tariff slots carry `spot_source` (`actual`, `forecast`, or `missing`). Missing spot
+prices and their totals are null, and the dashboard shows chart gaps and labels
+forecast estimates. Missing official tariff records return an upstream error
+instead of silently substituting zero or guessed tariff constants.

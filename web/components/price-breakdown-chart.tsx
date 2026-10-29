@@ -19,20 +19,7 @@ import RequestError from "./request-error";
 import { fetchJson } from "@/lib/client-api";
 import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
-interface SlotBreakdown {
-  hour: number;
-  minute: number;
-  ts: string;
-  spot_price: number;
-  grid_tariff: number;
-  system_tariff: number;
-  transmission_tariff: number;
-  grid_loss_tariff: number;
-  electricity_tax: number;
-  total_ex_vat: number;
-  vat: number;
-  total_incl_vat: number;
-}
+import { buildPriceBreakdownSeries, type SlotBreakdown } from "@/lib/price-breakdown";
 
 interface Props {
   area: AreaCode;
@@ -150,30 +137,10 @@ export default function PriceBreakdownChart({
     return getActiveSlotIndex(data, nowMs);
   }, [data, nowMs]);
 
-  const chartData = useMemo(() => {
-    if (!data) return [];
-    return data.map((s, index) => {
-      const spot = disabled.has("spot_price") ? 0 : s.spot_price;
-      const grid = disabled.has("grid_tariff") ? 0 : s.grid_tariff;
-      const transport = disabled.has("transport")
-        ? 0
-        : s.system_tariff + s.transmission_tariff + s.grid_loss_tariff;
-      const tax = disabled.has("electricity_tax") ? 0 : s.electricity_tax;
-      const subtotal = spot + grid + transport + tax;
-      const vat = disabled.has("vat") ? 0 : subtotal * 0.25;
-
-      return {
-        ts: s.ts,
-        isCurrent: index === activeSlotIndex,
-        spot_price: spot,
-        grid_tariff: grid,
-        transport,
-        electricity_tax: tax,
-        vat,
-        total: subtotal + vat,
-      };
-    });
-  }, [activeSlotIndex, data, disabled]);
+  const chartData = useMemo(
+    () => buildPriceBreakdownSeries(data ?? [], disabled, activeSlotIndex),
+    [activeSlotIndex, data, disabled],
+  );
   const activeTimestamp = chartData[activeSlotIndex]?.ts ?? null;
 
   if (!gln || !code) {
@@ -234,6 +201,11 @@ export default function PriceBreakdownChart({
       </div>
 
       {error && <RequestError message="Kunne ikke opdatere prissammensætningen. De senest hentede priser vises." onRetry={retry} retrying={loading} />}
+      {data.some((slot) => slot.spot_source !== "actual") && (
+        <p className="mb-3 text-xs text-amber-700">
+          Manglende priser vises som huller. Prognosepriser er estimater.
+        </p>
+      )}
       <div className="h-72">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
@@ -281,6 +253,9 @@ export default function PriceBreakdownChart({
                     <p className="font-medium text-gray-800 mb-1">
                       {formatCopenhagenDateTime(String(label), { ...SLOT_FORMAT, timeZoneName: "shortOffset" })}
                     </p>
+                    {payload[0]?.payload?.spot_source === "forecast" && (
+                      <p className="text-amber-700">Estimeret spotpris</p>
+                    )}
                     {payload.map((p) => {
                       const key = String(p.dataKey ?? "");
                       return (

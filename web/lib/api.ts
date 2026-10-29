@@ -103,15 +103,18 @@ export interface HAForecastEntry {
 }
 
 export interface HAResponse {
-  state: string;
+  state: number | "unavailable";
   attributes: {
     current_price: number | null;
+    available: boolean;
+    current_price_source: "actual" | "forecast" | "missing";
+    today_coverage: number;
     next_slot_price: number | null;
     today_min: number | null;
     today_max: number | null;
     today_average: number | null;
     forecast: HAForecastEntry[];
-    model_version: string;
+    model_version: string | null;
     forecast_quality: string | null;
     mae_24h: number | null;
   };

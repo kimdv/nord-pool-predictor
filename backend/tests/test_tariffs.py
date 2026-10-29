@@ -24,8 +24,8 @@ CPH = ZoneInfo("Europe/Copenhagen")
 def stub_tariffs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Replace EDS-backed tariff lookups with deterministic in-memory values."""
 
-    async def _flat(_code: str, fallback: float) -> float:
-        return fallback
+    async def _flat(_code: str) -> float:
+        return 0.05
 
     async def _hourly(_gln: str, _code: str) -> list[float]:
         return [0.5] * 24
@@ -163,8 +163,8 @@ class TestBuildPriceBreakdown:
         async def _nettab(_area: str) -> list[float]:
             return [0.0] * 24
 
-        async def _flat(_code: str, fallback: float) -> float:
-            return fallback
+        async def _flat(_code: str) -> float:
+            return 0.05
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(tariffs, "_fetch_latest_tariff", _hourly)
@@ -195,3 +195,31 @@ class TestCphTzExport:
         round_trip = local_midnight.astimezone(UTC).astimezone(tariffs.CPH_TZ)
         assert round_trip == local_midnight
         assert (round_trip + timedelta(days=1)).date() == today + timedelta(days=1)
+
+
+async def test_zero_and_missing_spot_prices_have_different_totals(stub_tariffs):
+    with time_machine.travel("2026-04-17T06:00:00+00:00"):
+        key = _utc_of("2026-04-17", 0, 0)
+        slots = await tariffs.build_price_breakdown("DK1", "5790000000000", "CD", {key: 0.0})
+    assert slots[0]["spot_price"] == 0
+    assert slots[0]["total_incl_vat"] is not None
+    assert slots[0]["spot_source"] == "actual"
+    assert slots[1]["spot_price"] is None
+    assert slots[1]["total_incl_vat"] is None
+    assert slots[1]["spot_source"] == "missing"
+
+
+async def test_official_zero_tariff_is_not_replaced_with_a_constant(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(tariffs, "_fetch_latest_tariff", AsyncMock(return_value=[0.0] * 24))
+    assert await tariffs._fetch_flat_tariff(tariffs.ELAFGIFT_CODE) == 0
+
+
+async def test_missing_tariff_does_not_become_zero(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    tariffs._tariff_cache.clear()
+    monkeypatch.setattr(tariffs, "eds_get", AsyncMock(return_value=[]))
+    with pytest.raises(tariffs.TariffUnavailableError):
+        await tariffs._fetch_latest_tariff("5790000000000", "MISSING")
