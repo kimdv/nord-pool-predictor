@@ -88,9 +88,9 @@ async def execute_next() -> bool:
     error = None
     try:
         if request["job_name"] == "bootstrap":
-            from nordpool_predictor.api.app import _bootstrap
+            from nordpool_predictor.scheduler.bootstrap import bootstrap
 
-            await _bootstrap()
+            await bootstrap()
         else:
             from nordpool_predictor.scheduler import jobs
 
