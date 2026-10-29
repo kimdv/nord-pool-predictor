@@ -167,19 +167,18 @@ async def job_cleanup() -> None:
 
     async def _do_cleanup() -> None:
         retention = [
-            ("weather_observations", settings.retention_weather_obs_days),
-            ("weather_forecasts", settings.retention_weather_fc_days),
-            ("production_observations", settings.retention_production_days),
-            ("production_forecasts", settings.retention_production_days),
-            ("crossborder_observations", settings.retention_crossborder_days),
-            ("crossborder_forecasts", settings.retention_crossborder_days),
-            ("forecast_values", settings.retention_forecast_days),
-            ("forecast_errors", settings.retention_forecast_days),
+            ("weather_observations", "ts", settings.retention_weather_obs_days),
+            ("weather_forecasts", "issued_at", settings.retention_weather_fc_days),
+            ("production_observations", "ts", settings.retention_production_days),
+            ("production_forecasts", "issued_at", settings.retention_production_days),
+            ("crossborder_observations", "ts", settings.retention_crossborder_days),
+            ("crossborder_forecasts", "issued_at", settings.retention_crossborder_days),
+            # Delete the parent: values, errors, metrics and baselines cascade together.
+            ("forecast_runs", "issued_at", settings.retention_forecast_days),
         ]
         async with get_session() as session:
-            for table, days in retention:
+            for table, ts_col, days in retention:
                 cutoff = datetime.now(UTC) - timedelta(days=days)
-                ts_col = "created_at" if "forecast_" in table else "ts"
                 result = await session.execute(
                     text(
                         f"DELETE FROM {table} "  # noqa: S608
