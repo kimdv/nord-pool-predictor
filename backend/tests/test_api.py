@@ -15,6 +15,7 @@ def _patched_settings(test_settings):
         patch("nordpool_predictor.api.app.get_settings", return_value=test_settings),
         patch("nordpool_predictor.api.routers.areas.get_settings", return_value=test_settings),
         patch("nordpool_predictor.api.routers.prices.get_settings", return_value=test_settings),
+        patch("nordpool_predictor.api.routers.health.get_settings", return_value=test_settings),
     ):
         yield
 
@@ -160,3 +161,19 @@ class TestPricesEndpoint:
         body = resp.json()
         assert body["area"] == "DK1"
         assert body["prices"] == []
+
+
+async def test_readiness_returns_503_when_database_is_unavailable(client):
+    session = AsyncMock()
+    session.execute.side_effect = RuntimeError("DB down")
+    with patch("nordpool_predictor.api.routers.health.get_session", _mock_session_ctx(session)):
+        response = await client.get("/api/health/ready")
+    assert response.status_code == 503
+    assert response.json()["status"] == "error"
+
+
+async def test_liveness_does_not_access_database(client):
+    with patch("nordpool_predictor.api.routers.health.get_session", side_effect=AssertionError):
+        response = await client.get("/api/health/live")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
