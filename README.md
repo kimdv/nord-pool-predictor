@@ -315,3 +315,12 @@ Duplicate queued or running jobs return HTTP 409. Pending jobs survive restarts;
 interrupted running jobs are marked failed when the worker restarts. Scheduled
 runs enqueue the same job types and share those duplicate controls. Shutdown
 waits for the current job; configure a suitable grace period for long training.
+
+### Feature availability
+
+Feature set `v2-asof` uses price rolling statistics anchored strictly before
+issuance and selects weather, production, and cross-border forecast snapshots
+whose `issued_at` is no later than that issuance. Historical observations are
+not substituted for future covariates. Missing historical snapshots stay missing;
+collect forecast vintages over time to improve training coverage. The migration deactivates older feature sets so the worker bootstrap retrains
+models with this contract before generating new forecasts.
