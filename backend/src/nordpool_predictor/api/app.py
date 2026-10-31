@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import sys
 from collections.abc import AsyncIterator
@@ -30,7 +29,6 @@ from nordpool_predictor.api.routers import (  # noqa: E402
 )
 from nordpool_predictor.config import get_settings  # noqa: E402
 from nordpool_predictor.database import dispose_engine, run_migrations  # noqa: E402
-from nordpool_predictor.scheduler.jobs import start_scheduler, stop_scheduler  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -174,24 +172,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting up – running database migrations")
     await run_migrations()
 
-    logger.info("Starting bootstrap in background")
-    task = asyncio.create_task(_bootstrap_wrapper())
-    bootstrap_state.set_task(task)
-
-    start_scheduler()
-    yield
-    stop_scheduler()
-
-    if not task.done():
-        logger.info("Cancelling in-progress bootstrap")
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    logger.info("Shutting down – disposing database engine")
-    await dispose_engine()
+    try:
+        yield
+    finally:
+        await dispose_engine()
 
 
 def create_app() -> FastAPI:

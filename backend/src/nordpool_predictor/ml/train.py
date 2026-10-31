@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -150,7 +151,7 @@ def _train_sync(
         best_params,
     )
 
-    time_str = now.strftime("%Y%m%d-%H%M%S")
+    time_str = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex}"
     model_version = f"lgbm-{area}-{time_str}"
     model_dir = Path(model_dir_str)
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -199,7 +200,7 @@ def _train_sync(
 async def train_models(area: str) -> str:
     """Train p10 / p50 / p90 quantile LightGBM models for *area*.
 
-    Returns the ``model_version`` string (e.g. ``lgbm-DK1-20260406-134500``).
+    Returns the ``model_version`` string (e.g. ``lgbm-DK1-20260406-134500-<id>``).
     """
     import asyncio
 
@@ -217,40 +218,46 @@ async def train_models(area: str) -> str:
         settings.model_dir,
     )
 
+    async def register_model(connection) -> None:
+        await connection.execute(
+            text(
+                "UPDATE model_versions SET is_active = FALSE "
+                "WHERE area = :area AND is_active = TRUE"
+            ),
+            {"area": area},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO model_versions "
+                "  (model_version, model_type, area,"
+                "   horizon_strategy, feature_set_version,"
+                "   trained_at, metrics_json,"
+                "   artifact_path, is_active) "
+                "VALUES "
+                "  (:model_version, :model_type, :area,"
+                "   :horizon_strategy, :feature_set_version,"
+                "   :trained_at, CAST(:metrics_json AS jsonb),"
+                "   :artifact_path, TRUE)"
+            ),
+            {
+                "model_version": model_version,
+                "model_type": "lgbm_quantile",
+                "area": area,
+                "horizon_strategy": "direct",
+                "feature_set_version": "v1",
+                "trained_at": now,
+                "metrics_json": json.dumps(metrics),
+                "artifact_path": artifact_path,
+            },
+        )
+
     try:
-        async with get_session() as session:
-            await session.execute(
-                text(
-                    "UPDATE model_versions SET is_active = FALSE "
-                    "WHERE area = :area AND is_active = TRUE"
-                ),
-                {"area": area},
-            )
-            await session.execute(
-                text(
-                    "INSERT INTO model_versions "
-                    "  (model_version, model_type, area,"
-                    "   horizon_strategy, feature_set_version,"
-                    "   trained_at, metrics_json,"
-                    "   artifact_path, is_active) "
-                    "VALUES "
-                    "  (:model_version, :model_type, :area,"
-                    "   :horizon_strategy, :feature_set_version,"
-                    "   :trained_at, CAST(:metrics_json AS jsonb),"
-                    "   :artifact_path, TRUE)"
-                ),
-                {
-                    "model_version": model_version,
-                    "model_type": "lgbm_quantile",
-                    "area": area,
-                    "horizon_strategy": "direct",
-                    "feature_set_version": "v1",
-                    "trained_at": now,
-                    "metrics_json": json.dumps(metrics),
-                    "artifact_path": artifact_path,
-                },
-            )
-            await session.commit()
+        from nordpool_predictor.worker import run_with_worker_lock
+
+        if not await run_with_worker_lock(register_model):
+            async with get_session() as session:
+                await register_model(session)
+                await session.commit()
     except Exception:
         logger.exception("Failed to register model %s for %s", model_version, area)
         raise
