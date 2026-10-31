@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import text
 
+from nordpool_predictor.config import WeatherPoint
 from nordpool_predictor.ml.asof import load_asof_covariates
 from nordpool_predictor.ml.features import TARGET, add_issuance_price_features
 
@@ -66,3 +67,49 @@ async def test_covariates_select_only_snapshots_available_at_each_issuance(
         )
     assert np.isnan(actual[feature].iloc[0])
     assert actual[feature].iloc[1:].tolist() == [10, 20]
+
+
+@pytest.mark.parametrize(
+    "cloud_values,issued_before_cutoff,expected",
+    [
+        pytest.param([], True, None, id="no-snapshots"),
+        pytest.param([None], True, None, id="missing-cloud-measurement"),
+        pytest.param([20.0], False, None, id="snapshot-after-issuance"),
+        pytest.param([20.0], True, 0.0, id="single-measurement"),
+        pytest.param([0.0], True, 0.0, id="valid-zero-measurement"),
+        pytest.param([20.0, 40.0], True, np.sqrt(200.0), id="multiple-measurements"),
+    ],
+)
+async def test_cloud_variance_preserves_missing_data(
+    sync_database, test_settings, cloud_values, issued_before_cutoff, expected
+):
+    points = [
+        WeatherPoint(id=f"DK1_TEST_{i}", name="Test", lat=56.0, lon=10.0)
+        for i in range(max(1, len(cloud_values)))
+    ]
+    test_settings.areas["DK1"].weather_points = points
+    issued_at = datetime(2026, 1, 1, 0 if issued_before_cutoff else 12, tzinfo=UTC)
+    if cloud_values:
+        with sync_database.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO weather_forecasts (area, issued_at, ts, cloud_cover_pct, source)
+                    VALUES (:area, :issued, '2026-01-02 12:00Z', :cloud_cover, 'test')
+                """),
+                [
+                    {"area": point.id, "issued": issued_at, "cloud_cover": value}
+                    for point, value in zip(points, cloud_values, strict=True)
+                ],
+            )
+
+    index = pd.date_range("2026-01-02 12:15", periods=1, tz=UTC)
+    cutoff = datetime(2026, 1, 1, 6, tzinfo=UTC)
+    with patch("nordpool_predictor.ml.asof.get_settings", return_value=test_settings):
+        actual = load_asof_covariates(
+            sync_database, pd.DataFrame(index=index), "DK1", cutoff, "weather"
+        )
+    variance = actual["cloud_cover_std"].iloc[0]
+    if expected is None:
+        assert pd.isna(variance)
+    else:
+        assert variance == pytest.approx(expected)

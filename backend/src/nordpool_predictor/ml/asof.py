@@ -45,7 +45,9 @@ def load_asof_covariates(
             MAX(temperature_c) AS temp_max, AVG(wind_speed_ms) AS wind_speed_mean,
             MAX(wind_speed_ms) AS wind_speed_max, AVG(precipitation_mm) AS precip_mean,
             SUM(precipitation_mm) AS precip_sum, AVG(cloud_cover_pct) AS cloud_cover_mean,
-            COALESCE(STDDEV(cloud_cover_pct), 0) AS cloud_cover_std,
+            CASE WHEN COUNT(cloud_cover_pct) = 0 THEN NULL
+                 ELSE COALESCE(STDDEV(cloud_cover_pct), 0)
+            END AS cloud_cover_std,
             AVG(solar_irradiance_wm2) AS solar_irradiance_mean
         """
     elif kind == "production":
