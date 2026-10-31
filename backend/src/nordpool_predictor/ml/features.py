@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from nordpool_predictor.config import get_settings
+from nordpool_predictor.ml.asof import issuance_times, load_asof_covariates
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,8 @@ def build_feature_matrix(
     area: str,
     start: datetime,
     end: datetime,
+    *,
+    horizon_seed: int = 42,
 ) -> pd.DataFrame:
     """Build the full feature matrix for *area* over ``[start, end)``.
 
@@ -120,20 +123,29 @@ def build_feature_matrix(
     then returns the complete DataFrame (including the extended rows whose
     lags may be partially ``NaN``).
     """
-    extended_start = start - timedelta(hours=192)
+    extended_start = start - timedelta(hours=360)
 
     df = load_prices(area, extended_start, end)
     if df.empty:
         logger.warning("No price data for %s [%s, %s]", area, start, end)
         return df
 
+    history = df.copy()
     df = add_calendar_features(df)
     df = add_price_lag_features(df)
-    df = add_weather_features(df, area)
-    df = add_production_features(df, area)
-    df = add_crossborder_features(df, area)
+    df = df.loc[df.index >= start].copy()
+    if df.empty:
+        return df
+    rng = np.random.default_rng(horizon_seed)
+    horizons = rng.integers(1, 673, size=len(df), dtype=np.int32)
+    cutoffs = pd.Series(df.index - pd.to_timedelta(horizons * 15, unit="min"), index=df.index)
+    df = add_issuance_price_features(df, history, cutoffs)
+    df = add_weather_features(df, area, issued_at=cutoffs)
+    df = add_production_features(df, area, issued_at=cutoffs)
+    df = add_crossborder_features(df, area, issued_at=cutoffs)
     df = add_cross_features(df)
     df = add_residual_load_features(df)
+    df = apply_horizon_features(df, horizons)
 
     for col in df.columns:
         if df[col].dtype == object:
@@ -282,8 +294,13 @@ def _query_weather_fc(
     return df.set_index("ts")
 
 
-def add_weather_features(df: pd.DataFrame, area: str) -> pd.DataFrame:
+def add_weather_features(
+    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series | None = None
+) -> pd.DataFrame:
     """Zone-level aggregated weather: observations first, forecasts as fallback."""
+    if issued_at is not None:
+        return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "weather")
+
     point_ids = _weather_point_ids(area)
     if not point_ids:
         logger.warning("No weather points configured for area %s", area)
@@ -369,8 +386,13 @@ def _query_production_fc(
     return df.set_index("ts")
 
 
-def add_production_features(df: pd.DataFrame, area: str) -> pd.DataFrame:
+def add_production_features(
+    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series | None = None
+) -> pd.DataFrame:
     """Wind and solar production (MW): observations first, forecasts as fallback."""
+    if issued_at is not None:
+        return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "production")
+
     engine = _get_sync_engine()
     ts_min, ts_max = df.index.min(), df.index.max()
 
@@ -445,8 +467,13 @@ def _query_crossborder_fc(
         )
 
 
-def add_crossborder_features(df: pd.DataFrame, area: str) -> pd.DataFrame:
+def add_crossborder_features(
+    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series | None = None
+) -> pd.DataFrame:
     """Per-connection flow and aggregate net-import feature."""
+    if issued_at is not None:
+        return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "crossborder")
+
     engine = _get_sync_engine()
     ts_min, ts_max = df.index.min(), df.index.max()
     pattern = f"%{area}%"
@@ -553,4 +580,31 @@ def apply_horizon_features(
             if mask.any():
                 df.loc[mask, col] = np.nan
 
+    return df
+
+
+def add_issuance_price_features(
+    df: pd.DataFrame,
+    history: pd.DataFrame,
+    issued_at: datetime | pd.Series,
+) -> pd.DataFrame:
+    """Compute rolling statistics from prices strictly before issuance."""
+    if history.empty:
+        for hours in (24, 168):
+            for label in ("mean", "std"):
+                df[f"price_rolling_{label}_{hours}h"] = np.nan
+        return df
+    cutoffs = issuance_times(df.index, issued_at)
+    index = pd.date_range(
+        history.index.min(), max(history.index.max(), cutoffs.max()), freq="15min"
+    )
+    prices = history[TARGET].reindex(index).shift(1)
+    for hours, steps in [(24, 96), (168, 672)]:
+        for label, values in [
+            ("mean", prices.rolling(steps, min_periods=1).mean()),
+            ("std", prices.rolling(steps, min_periods=1).std()),
+        ]:
+            df[f"price_rolling_{label}_{hours}h"] = values.reindex(
+                pd.DatetimeIndex(cutoffs)
+            ).to_numpy()
     return df

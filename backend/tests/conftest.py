@@ -88,3 +88,19 @@ async def database():
         async with admin.begin() as conn:
             await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         await admin.dispose()
+
+
+@pytest.fixture
+async def sync_database(database):
+    from sqlalchemy import create_engine, text
+
+    async with database.connect() as conn:
+        schema = (await conn.execute(text("SELECT current_schema()"))).scalar_one()
+    engine = create_engine(
+        database.url.set(drivername="postgresql+psycopg2"),
+        connect_args={"options": f"-csearch_path={schema}"},
+    )
+    try:
+        yield engine
+    finally:
+        engine.dispose()
