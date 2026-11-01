@@ -166,7 +166,7 @@ async def _fetch_latest_tariff(
         respect_rate_limit=False,
     )
     if not records:
-        raise TariffUnavailableError(f"No tariff found for {gln}/{charge_type_code}")
+        raise TariffUnavailableError("No tariff data available")
     result = _extract_hourly_prices(records[0])
     _cache_set(cache_key, result)
     return result
