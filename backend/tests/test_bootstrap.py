@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -58,7 +59,7 @@ def recovery_mocks(test_settings):
         yield operations
 
 
-@pytest.mark.parametrize("failed", ["backfill_prices", "backfill_weather"])
+@pytest.mark.parametrize("failed", ["backfill_production", "backfill_weather"])
 async def test_backfill_failure_still_recovers_area_with_usable_model(recovery_mocks, failed):
     recovery_mocks[failed].side_effect = RuntimeError("upstream failure")
     with pytest.raises(RuntimeError, match="Bootstrap incomplete"):
@@ -100,6 +101,38 @@ async def test_weather_backfill_is_isolated_per_training_area(recovery_mocks):
     recovery_mocks["run_forecast"].assert_awaited_once_with("DK2")
 
 
+@pytest.mark.parametrize("price_failure", [False, True])
+async def test_reused_models_restore_recent_prices_without_retraining(
+    recovery_mocks, price_failure
+):
+    with patch.object(module, "ready_models", AsyncMock(return_value={"DK1": "v1", "DK2": "v2"})):
+        if price_failure:
+            recovery_mocks["backfill_prices"].side_effect = RuntimeError("prices unavailable")
+            with pytest.raises(RuntimeError, match="recent price backfill"):
+                await module.bootstrap()
+            recovery_mocks["run_forecast"].assert_not_awaited()
+        else:
+            await module.bootstrap()
+            assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
+                "DK1",
+                "DK2",
+            ]
+    recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
+    recovery_mocks["train_models"].assert_not_awaited()
+
+
+async def test_failed_full_price_backfill_can_still_recover_existing_model(recovery_mocks):
+    async def prices(*, days):
+        if days != 8:
+            raise RuntimeError("full history unavailable")
+
+    recovery_mocks["backfill_prices"].side_effect = prices
+    with pytest.raises(RuntimeError, match="price backfill"):
+        await module.bootstrap()
+    recovery_mocks["train_models"].assert_not_awaited()
+    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1")
+
+
 async def test_ready_models_reject_missing_artifacts(database):
     async with database.begin() as conn:
         await conn.execute(
@@ -111,3 +144,47 @@ async def test_ready_models_reject_missing_artifacts(database):
         )
     with patch.object(module, "_load_models", side_effect=FileNotFoundError):
         assert await module.ready_models() == {}
+
+
+@pytest.mark.parametrize(
+    "status,model_version,future,expected",
+    [
+        ("completed", "v1", True, True),
+        ("scored", "v1", True, True),
+        ("completed", "v1", False, False),
+        ("completed", "v2", True, False),
+        ("failed", "v1", True, False),
+        ("running", "v1", True, False),
+    ],
+)
+async def test_forecast_readiness_uses_matching_successful_unexpired_values(
+    database, status, model_version, future, expected
+):
+    now = datetime.now(UTC)
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
+                feature_set_version, trained_at, artifact_path)
+            VALUES (:version, 'test', 'DK1', 'direct', 'v2-asof', NOW(), '/tmp/test')
+        """),
+            {"version": model_version},
+        )
+        run_id = (
+            await conn.execute(
+                text("""
+            INSERT INTO forecast_runs (area, model_version, issued_at, horizon_steps, status)
+            VALUES ('DK1', :version, :issued, 1, :status) RETURNING run_id
+        """),
+                {"version": model_version, "issued": now, "status": status},
+            )
+        ).scalar_one()
+        await conn.execute(
+            text("""
+            INSERT INTO forecast_values (run_id, ts, horizon_step, predicted_price_dkk_kwh)
+            VALUES (:id, :ts, 1, 0.5)
+        """),
+            {"id": run_id, "ts": now + timedelta(days=1 if future else -1)},
+        )
+    assert await module.forecast_ready("DK1", "v1") is expected
+    assert await module.forecast_ready("DK2", "v1") is False

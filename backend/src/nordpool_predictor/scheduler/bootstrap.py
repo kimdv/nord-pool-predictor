@@ -85,6 +85,7 @@ async def bootstrap() -> None:
         return True
 
     shared_history_ready = True
+    price_history_ready = False
     if needs_training:
         # These sources fetch both areas together. A failure affects new training,
         # but must not block forecast recovery for already usable models.
@@ -95,6 +96,8 @@ async def bootstrap() -> None:
         ):
             succeeded = await attempt(label, operation, days=settings.training_window_days)
             shared_history_ready = shared_history_ready and succeeded
+            if operation is backfill_prices:
+                price_history_ready = succeeded
 
     needs_forecast = set(needs_training)
     for area, version in models.items():
@@ -117,6 +120,10 @@ async def bootstrap() -> None:
         area for area in settings.area_codes if area in needs_forecast and area in usable_areas
     ]
     if forecast_areas:
+        # Reused models also need the 192-hour price window consumed by prediction.
+        # Retry a failed full-window price backfill with this smaller recovery window.
+        if not price_history_ready:
+            price_history_ready = await attempt("recent price backfill", backfill_prices, days=8)
         # Training is independent of live ingestion. Weather is fetched per area
         # so an upstream failure for one area cannot prevent another's recovery.
         production_ready = await attempt("production forecasts", ingest_production_forecasts)
@@ -124,7 +131,7 @@ async def bootstrap() -> None:
             weather_ready = await attempt(
                 f"{area} weather forecasts", ingest_weather_forecasts, area=area
             )
-            if weather_ready and production_ready:
+            if price_history_ready and weather_ready and production_ready:
                 await attempt(f"{area} forecast", run_forecast, area)
 
     if failures:
