@@ -182,8 +182,8 @@ async def _score_single_run(
     metrics: dict[str, float | None] = {}
     for label, max_step in [("24h", 96), ("72h", 288), ("168h", 672)]:
         subset = merged[merged["horizon_step"] <= max_step]
-        expected = int((fc["horizon_step"] <= max_step).sum())
-        metrics[f"coverage_{label}"] = len(subset) / expected if expected else 0.0
+        expected = max_step
+        metrics[f"coverage_{label}"] = len(subset) / expected
         if subset.empty or len(subset) < expected:
             metrics[f"mae_{label}"] = None
             metrics[f"rmse_{label}"] = None
@@ -302,6 +302,9 @@ async def score_baselines(
     * ``quarter_of_week_average`` – rolling 4-week mean for the same quarter-of-week
     """
     forecast_ts = forecast_df.loc[forecast_df["horizon_step"] <= 96, "ts"]
+    if len(forecast_ts) < 96:
+        await _replace_baselines(run_id, [])
+        return
     ts_min = forecast_ts.min()
     ts_max = forecast_ts.max()
 

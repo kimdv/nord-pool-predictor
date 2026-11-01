@@ -141,6 +141,29 @@ async def _seed_run(conn, issued, *, status="completed", steps=96):
     return run_id
 
 
+async def test_short_run_cannot_claim_complete_named_horizons(database):
+    issued = datetime(2026, 1, 1, tzinfo=UTC)
+    async with database.begin() as conn:
+        await _seed_run(conn, issued, steps=2)
+        await conn.execute(
+            text("""
+            INSERT INTO price_observations (area, ts, price_dkk_kwh, source)
+            SELECT 'DK1', ts, 0.6, 'test' FROM forecast_values
+        """)
+        )
+    await score_forecasts()
+    async with database.connect() as conn:
+        row = (await conn.execute(text("SELECT * FROM forecast_run_metrics"))).mappings().one()
+        for label, steps in [("24h", 96), ("72h", 288), ("168h", 672)]:
+            assert row[f"coverage_{label}"] == pytest.approx(2 / steps)
+            assert row[f"mae_{label}"] is None
+            assert row[f"rmse_{label}"] is None
+            assert row[f"bias_{label}"] is None
+        assert row["quality_label"] is None
+        assert (await conn.execute(text("SELECT status FROM forecast_runs"))).scalar() == "scored"
+        assert (await conn.execute(text("SELECT COUNT(*) FROM baseline_metrics"))).scalar() == 0
+
+
 async def test_migration_invalidates_and_rescores_partial_and_full_legacy_runs(database):
     from nordpool_predictor.database import run_migrations
 
