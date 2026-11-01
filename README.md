@@ -331,3 +331,6 @@ usable; missing or expired forecasts are regenerated. If training is required,
 idempotent backfills restore the full configured history rather than trusting
 another area's newest timestamp. Per-area failures are recorded as a failed
 bootstrap request, and a restart resumes the remaining areas.
+Replacement forecasts require a complete eight-day quarter-hour price history
+for their area. Bootstrap checks persisted coverage even when ingestion returns
+successfully, and missing history does not block recovery for other areas.

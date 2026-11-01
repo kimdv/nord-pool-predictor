@@ -26,6 +26,7 @@ from nordpool_predictor.ml.features import (
 )
 
 logger = logging.getLogger(__name__)
+PRICE_HISTORY_DAYS = 8
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +77,7 @@ def _build_forecast_features(
         freq="15min",
     )
 
-    history_start = now - timedelta(hours=192)
+    history_start = now - timedelta(days=PRICE_HISTORY_DAYS)
     hist = load_prices(area, history_start, now)
 
     future = pd.DataFrame({TARGET: np.nan}, index=target_ts)

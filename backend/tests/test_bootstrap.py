@@ -5,9 +5,11 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import time_machine
 from sqlalchemy import text
 
 from nordpool_predictor.scheduler import bootstrap as module
+from nordpool_predictor.scheduler.bootstrap import verify_price_history as _verify_price_history
 
 
 @pytest.mark.parametrize("existing_forecast", [False, True])
@@ -21,6 +23,7 @@ async def test_partial_bootstrap_preserves_ready_area_and_completes_missing_area
         patch.object(module, "forecast_ready", AsyncMock(return_value=existing_forecast)),
         patch.object(module, "train_models", AsyncMock()) as train,
         patch.object(module, "run_forecast", AsyncMock()) as forecast,
+        patch.object(module, "verify_price_history", AsyncMock()),
         patch.object(module, "backfill_prices", AsyncMock()),
         patch.object(module, "backfill_weather", AsyncMock()),
         patch.object(module, "backfill_production", AsyncMock()),
@@ -54,6 +57,7 @@ def recovery_mocks(test_settings):
                 "ingest_production_forecasts",
                 "train_models",
                 "run_forecast",
+                "verify_price_history",
             )
         }
         yield operations
@@ -110,13 +114,13 @@ async def test_reused_models_restore_recent_prices_without_retraining(
             recovery_mocks["backfill_prices"].side_effect = RuntimeError("prices unavailable")
             with pytest.raises(RuntimeError, match="recent price backfill"):
                 await module.bootstrap()
-            recovery_mocks["run_forecast"].assert_not_awaited()
         else:
             await module.bootstrap()
-            assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
-                "DK1",
-                "DK2",
-            ]
+        # Persisted usable history permits recovery even when refreshing it fails.
+        assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
+            "DK1",
+            "DK2",
+        ]
     recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
     recovery_mocks["train_models"].assert_not_awaited()
 
@@ -131,6 +135,39 @@ async def test_failed_full_price_backfill_can_still_recover_existing_model(recov
         await module.bootstrap()
     recovery_mocks["train_models"].assert_not_awaited()
     recovery_mocks["run_forecast"].assert_awaited_once_with("DK1")
+
+
+@pytest.mark.parametrize("training_days,backfill_days", [(2, [2, 8]), (8, [8]), (365, [365])])
+async def test_training_backfill_must_cover_prediction_window(
+    recovery_mocks, test_settings, training_days, backfill_days
+):
+    test_settings.training_window_days = training_days
+    await module.bootstrap()
+    assert [call.kwargs["days"] for call in recovery_mocks["backfill_prices"].await_args_list] == (
+        backfill_days
+    )
+    recovery_mocks["run_forecast"].assert_any_await("DK1")
+
+
+async def test_forecast_that_expires_during_training_is_recovered(recovery_mocks):
+    trained = False
+
+    async def train(area):
+        nonlocal trained
+        trained = True
+
+    async def ready(area, version):
+        return not trained
+
+    recovery_mocks["train_models"].side_effect = train
+    with patch.object(module, "forecast_ready", AsyncMock(side_effect=ready)) as check:
+        await module.bootstrap()
+    assert trained
+    check.assert_awaited_once_with("DK1", "v1")
+    assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
+        "DK1",
+        "DK2",
+    ]
 
 
 async def test_ready_models_reject_missing_artifacts(database):
@@ -188,3 +225,71 @@ async def test_forecast_readiness_uses_matching_successful_unexpired_values(
         )
     assert await module.forecast_ready("DK1", "v1") is expected
     assert await module.forecast_ready("DK2", "v1") is False
+
+
+@pytest.mark.parametrize("minute", [0, 8])
+@pytest.mark.parametrize("missing_slot", [None, 0, 400, 767])
+async def test_price_history_requires_each_slot_in_prediction_window(
+    database, minute, missing_slot
+):
+    issued = datetime(2026, 1, 10, 12, minute, tzinfo=UTC)
+    end = datetime(2026, 1, 10, 12, 15 if minute else 0, tzinfo=UTC)
+    start = end - timedelta(days=8)
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO price_observations (area, ts, price_dkk_kwh, source)
+                VALUES (:area, :ts, 0, 'test')
+            """),
+            [
+                {"area": area, "ts": start + timedelta(minutes=15 * step)}
+                for area in ["DK1", "DK2"]
+                for step in range(768)
+                if area == "DK2" or step != missing_slot
+            ],
+        )
+        # Rows outside the consumed window must not compensate for a missing slot.
+        await conn.execute(
+            text("""
+                INSERT INTO price_observations (area, ts, price_dkk_kwh, source)
+                VALUES ('DK1', :before, 0, 'test'), ('DK1', :after, 0, 'test')
+            """),
+            {"before": start - timedelta(minutes=15), "after": end},
+        )
+    with time_machine.travel(issued, tick=False):
+        if missing_slot is None:
+            await module.verify_price_history("DK1")
+        else:
+            with pytest.raises(RuntimeError, match="DK1: 1 missing slots"):
+                await module.verify_price_history("DK1")
+        await module.verify_price_history("DK2")
+
+
+@pytest.mark.parametrize("missing_area", ["DK1", "DK2"])
+async def test_empty_backfill_only_blocks_area_without_persisted_history(
+    database, recovery_mocks, missing_area
+):
+    issued = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+    healthy_area = "DK2" if missing_area == "DK1" else "DK1"
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO price_observations (area, ts, price_dkk_kwh, source)
+                VALUES (:area, :ts, 0.5, 'test')
+            """),
+            [
+                {"area": healthy_area, "ts": issued - timedelta(minutes=15 * step)}
+                for step in range(1, 769)
+            ],
+        )
+    # Exercise the real coverage query while ingestion returns successfully without writing rows.
+    with (
+        time_machine.travel(issued, tick=False),
+        patch.object(module, "ready_models", AsyncMock(return_value={"DK1": "v1", "DK2": "v2"})),
+        patch.object(module, "verify_price_history", _verify_price_history),
+    ):
+        with pytest.raises(RuntimeError, match=f"{missing_area} price history"):
+            await module.bootstrap()
+    recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(healthy_area)
+    recovery_mocks["train_models"].assert_not_awaited()

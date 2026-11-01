@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
@@ -14,7 +15,7 @@ from nordpool_predictor.ingestion.production import (
     ingest_production_forecasts,
 )
 from nordpool_predictor.ingestion.weather import backfill_weather, ingest_weather_forecasts
-from nordpool_predictor.ml.predict import _load_models, run_forecast
+from nordpool_predictor.ml.predict import PRICE_HISTORY_DAYS, _load_models, run_forecast
 from nordpool_predictor.ml.train import train_models
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,31 @@ async def forecast_ready(area: str, model_version: str) -> bool:
         )
 
 
+async def verify_price_history(area: str) -> None:
+    """Require the persisted quarter-hour grid consumed by prediction for this area."""
+    now = datetime.now(UTC)
+    end = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    if end < now:
+        end += timedelta(minutes=15)
+    async with get_session() as session:
+        missing = (
+            await session.execute(
+                text("""
+                    SELECT COUNT(*) FROM generate_series(
+                        CAST(:start AS timestamptz),
+                        CAST(:end AS timestamptz) - INTERVAL '15 minutes',
+                        INTERVAL '15 minutes'
+                    ) AS expected(ts)
+                    LEFT JOIN price_observations p ON p.area = :area AND p.ts = expected.ts
+                    WHERE p.price_dkk_kwh IS NULL
+                """),
+                {"area": area, "start": end - timedelta(days=PRICE_HISTORY_DAYS), "end": end},
+            )
+        ).scalar_one()
+    if missing:
+        raise RuntimeError(f"Incomplete recent price history for {area}: {missing} missing slots")
+
+
 async def bootstrap() -> None:
     """Reconcile each configured area's usable model and current forecast."""
     settings = get_settings()
@@ -85,7 +111,7 @@ async def bootstrap() -> None:
         return True
 
     shared_history_ready = True
-    price_history_ready = False
+    price_window_fetched = False
     if needs_training:
         # These sources fetch both areas together. A failure affects new training,
         # but must not block forecast recovery for already usable models.
@@ -97,12 +123,9 @@ async def bootstrap() -> None:
             succeeded = await attempt(label, operation, days=settings.training_window_days)
             shared_history_ready = shared_history_ready and succeeded
             if operation is backfill_prices:
-                price_history_ready = succeeded
-
-    needs_forecast = set(needs_training)
-    for area, version in models.items():
-        if area in settings.area_codes and not await forecast_ready(area, version):
-            needs_forecast.add(area)
+                price_window_fetched = (
+                    succeeded and settings.training_window_days >= PRICE_HISTORY_DAYS
+                )
 
     usable_areas = set(models)
     for area in needs_training:
@@ -116,22 +139,33 @@ async def bootstrap() -> None:
             if await attempt(f"{area} training", train_models, area):
                 usable_areas.add(area)
 
+    # Training/backfills can take hours. Check reused forecasts after that work
+    # so a forecast that expired during training is included in recovery.
+    needs_forecast = set(needs_training)
+    for area, version in models.items():
+        if area in settings.area_codes and not await forecast_ready(area, version):
+            needs_forecast.add(area)
+
     forecast_areas = [
         area for area in settings.area_codes if area in needs_forecast and area in usable_areas
     ]
     if forecast_areas:
         # Reused models also need the 192-hour price window consumed by prediction.
         # Retry a failed full-window price backfill with this smaller recovery window.
-        if not price_history_ready:
-            price_history_ready = await attempt("recent price backfill", backfill_prices, days=8)
+        if not price_window_fetched:
+            await attempt("recent price backfill", backfill_prices, days=PRICE_HISTORY_DAYS)
         # Training is independent of live ingestion. Weather is fetched per area
         # so an upstream failure for one area cannot prevent another's recovery.
         production_ready = await attempt("production forecasts", ingest_production_forecasts)
         for area in forecast_areas:
+            # A successful request can still return no rows or omit an area.
+            # Cached usable history can also survive an upstream fetch failure.
+            if not await attempt(f"{area} price history", verify_price_history, area):
+                continue
             weather_ready = await attempt(
                 f"{area} weather forecasts", ingest_weather_forecasts, area=area
             )
-            if price_history_ready and weather_ready and production_ready:
+            if weather_ready and production_ready:
                 await attempt(f"{area} forecast", run_forecast, area)
 
     if failures:
