@@ -192,6 +192,38 @@ async def test_forecast_that_expires_during_training_is_recovered(recovery_mocks
     ]
 
 
+@pytest.mark.parametrize(
+    "models,failed_area,healthy_area",
+    [
+        ({"DK1": "v1", "DK2": "v2"}, "DK1", "DK2"),
+        ({"DK1": "v1", "DK2": "v2"}, "DK2", "DK1"),
+        ({"DK1": "v1"}, "DK1", "DK2"),
+    ],
+)
+async def test_readiness_query_failure_does_not_block_other_area_recovery(
+    recovery_mocks, models, failed_area, healthy_area
+):
+    async def ready(area, version):
+        if area == failed_area:
+            raise RuntimeError("readiness query unavailable")
+        return False
+
+    with (
+        patch.object(module, "ready_models", AsyncMock(return_value=models)),
+        patch.object(module, "forecast_ready", AsyncMock(side_effect=ready)) as check,
+    ):
+        with pytest.raises(
+            RuntimeError, match=f"Bootstrap incomplete: {failed_area} forecast readiness"
+        ):
+            await module.bootstrap()
+    assert [call.args[0] for call in check.await_args_list] == list(models)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(healthy_area)
+    if healthy_area not in models:
+        recovery_mocks["train_models"].assert_awaited_once_with(healthy_area)
+    else:
+        recovery_mocks["train_models"].assert_not_awaited()
+
+
 async def test_ready_models_reject_missing_artifacts(database):
     async with database.begin() as conn:
         await conn.execute(

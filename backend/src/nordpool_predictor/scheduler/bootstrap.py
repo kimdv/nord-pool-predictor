@@ -150,7 +150,15 @@ async def bootstrap() -> None:
     # so a forecast that expired during training is included in recovery.
     needs_forecast = set(needs_training)
     for area, version in models.items():
-        if area in settings.area_codes and not await forecast_ready(area, version):
+        if area not in settings.area_codes:
+            continue
+        try:
+            ready = await forecast_ready(area, version)
+        except Exception:
+            logger.exception("Bootstrap forecast readiness check failed for %s", area)
+            failures.append(f"{area} forecast readiness")
+            continue
+        if not ready:
             needs_forecast.add(area)
 
     forecast_areas = [
