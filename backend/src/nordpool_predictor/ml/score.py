@@ -321,6 +321,7 @@ async def score_baselines(
 
     if not rows:
         logger.warning("No price history for baselines (run %s)", run_id)
+        await _replace_baselines(run_id, [])
         return
 
     prices = pd.Series(
@@ -368,21 +369,25 @@ async def score_baselines(
             }
         )
 
-    if not insert_rows:
-        return
+    await _replace_baselines(run_id, insert_rows)
+    logger.info("Scored %d baseline(s) for run %s", len(insert_rows), run_id)
 
+
+async def _replace_baselines(run_id: str, rows: list[dict]) -> None:
+    """Replace the complete baseline set atomically, including an empty result."""
     async with get_session() as session:
         await session.execute(
-            text(
-                "INSERT INTO baseline_metrics "
-                "  (run_id, baseline_name, mae, rmse, bias) "
-                "VALUES "
-                "  (CAST(:run_id AS uuid), :baseline_name, :mae, :rmse, :bias) "
-                "ON CONFLICT (run_id, baseline_name) DO UPDATE SET "
-                "mae = EXCLUDED.mae, rmse = EXCLUDED.rmse, bias = EXCLUDED.bias, scored_at = NOW()"
-            ),
-            insert_rows,
+            text("DELETE FROM baseline_metrics WHERE run_id = CAST(:run_id AS uuid)"),
+            {"run_id": run_id},
         )
+        if rows:
+            await session.execute(
+                text(
+                    "INSERT INTO baseline_metrics "
+                    "  (run_id, baseline_name, mae, rmse, bias) "
+                    "VALUES "
+                    "  (CAST(:run_id AS uuid), :baseline_name, :mae, :rmse, :bias)"
+                ),
+                rows,
+            )
         await session.commit()
-
-    logger.info("Scored %d baseline(s) for run %s", len(insert_rows), run_id)

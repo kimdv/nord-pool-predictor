@@ -17,6 +17,7 @@ from sqlalchemy import text
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
 from nordpool_predictor.ml.features import (
+    HORIZON_STEP_FEATURE,
     TARGET,
     build_feature_matrix,
 )
@@ -109,9 +110,7 @@ def _train_sync(
     logger.info("Training set: %d samples × %d features for %s", len(X), X.shape[1], area)
 
     # Reserve the newest 20% before tuning; the final production model is refit later.
-    split = int(len(X) * 0.8)
-    X_development, y_development = X.iloc[:split], y.iloc[:split]
-    X_holdout, y_holdout = X.iloc[split:], y.iloc[split:]
+    X_development, y_development, X_holdout, y_holdout = split_holdout(X, y)
     tscv = TimeSeriesSplit(n_splits=N_CV_SPLITS)
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -184,6 +183,8 @@ def _train_sync(
         "n_development_samples": len(X_development),
         "n_holdout_samples": len(X_holdout),
         "holdout_start": str(X_holdout.index.min()),
+        "development_end": str(X_development.index.max()),
+        "n_purged_samples": len(X) - len(X_development) - len(X_holdout),
     }
 
     return model_version, model_dir_str, metrics, trained_models, now
@@ -262,6 +263,20 @@ async def train_models(area: str) -> str:
         metrics["bias"],
     )
     return model_version
+
+
+def split_holdout(X: pd.DataFrame, y: pd.Series):
+    """Reserve the newest targets and purge labels unavailable at their issuances."""
+    split = int(len(X) * 0.8)
+    X_holdout, y_holdout = X.iloc[split:], y.iloc[split:]
+    issuances = X_holdout.index - pd.to_timedelta(
+        X_holdout[HORIZON_STEP_FEATURE].to_numpy() * 15, unit="min"
+    )
+    development = X.iloc[:split]
+    development = development.loc[development.index < issuances.min()]
+    if len(development) < 100:
+        raise ValueError("Insufficient development samples after purging holdout issuance overlap")
+    return development, y.loc[development.index], X_holdout, y_holdout
 
 
 def evaluate_holdout(

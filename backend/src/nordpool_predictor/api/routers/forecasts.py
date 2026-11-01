@@ -191,6 +191,7 @@ async def get_benchmarks(area: str) -> BenchmarkResponse:
                 "SELECT fr.run_id, fr.area FROM forecast_runs fr "
                 "JOIN forecast_run_metrics fm ON fm.run_id = fr.run_id "
                 "WHERE fr.area = :area AND fm.mae_24h IS NOT NULL "
+                "AND fm.coverage_24h = 1.0 "
                 "ORDER BY fr.issued_at DESC LIMIT 1"
             ),
             {"area": area},

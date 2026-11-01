@@ -349,8 +349,9 @@ without creating a forecast.
 
 Model registration reports a chronological 20% holdout that is excluded from
 hyperparameter tuning and evaluation-model fitting; production models are then
-fit on the full training window. Live forecasts are rescored as actual prices
-arrive. Horizon metrics stay null until that horizon is fully covered, and the
+fit on the full training window. Development labels at or after the earliest
+simulated holdout issuance are purged before tuning and evaluation. Live forecasts
+are rescored as actual prices arrive. Horizon metrics stay null until that horizon is fully covered, and the
 accuracy API reports `coverage_24h`, `coverage_72h`, and `coverage_168h`. A run
 becomes `scored` only after all its values have actual prices. Benchmarks use the
 latest run with a complete 24-hour evaluation and compare baselines over that
