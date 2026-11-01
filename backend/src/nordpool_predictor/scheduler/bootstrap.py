@@ -111,7 +111,7 @@ async def bootstrap() -> None:
         return True
 
     shared_history_ready = True
-    price_window_fetched = False
+    price_window_fetched_until: datetime | None = None
     if needs_training:
         # These sources fetch both areas together. A failure affects new training,
         # but must not block forecast recovery for already usable models.
@@ -120,12 +120,19 @@ async def bootstrap() -> None:
             ("production backfill", backfill_production),
             ("crossborder backfill", backfill_crossborder),
         ):
+            started_at = datetime.now(UTC)
             succeeded = await attempt(label, operation, days=settings.training_window_days)
             shared_history_ready = shared_history_ready and succeeded
-            if operation is backfill_prices:
-                price_window_fetched = (
-                    succeeded and settings.training_window_days >= PRICE_HISTORY_DAYS
-                )
+            if (
+                operation is backfill_prices
+                and succeeded
+                and settings.training_window_days >= PRICE_HISTORY_DAYS
+            ):
+                # backfill_prices ends at the midnight after its request date.
+                # That range can become stale while another area is training.
+                price_window_fetched_until = started_at.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ) + timedelta(days=1)
 
     usable_areas = set(models)
     for area in needs_training:
@@ -152,7 +159,7 @@ async def bootstrap() -> None:
     if forecast_areas:
         # Reused models also need the 192-hour price window consumed by prediction.
         # Retry a failed full-window price backfill with this smaller recovery window.
-        if not price_window_fetched:
+        if price_window_fetched_until is None or datetime.now(UTC) >= price_window_fetched_until:
             await attempt("recent price backfill", backfill_prices, days=PRICE_HISTORY_DAYS)
         # Training is independent of live ingestion. Weather is fetched per area
         # so an upstream failure for one area cannot prevent another's recovery.

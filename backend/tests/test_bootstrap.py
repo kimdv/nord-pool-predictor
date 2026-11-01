@@ -8,6 +8,7 @@ import pytest
 import time_machine
 from sqlalchemy import text
 
+from nordpool_predictor.ingestion.prices import backfill_prices as _backfill_prices
 from nordpool_predictor.scheduler import bootstrap as module
 from nordpool_predictor.scheduler.bootstrap import verify_price_history as _verify_price_history
 
@@ -147,6 +148,27 @@ async def test_training_backfill_must_cover_prediction_window(
         backfill_days
     )
     recovery_mocks["run_forecast"].assert_any_await("DK1")
+
+
+@pytest.mark.parametrize("elapsed_minutes,expected_days", [(5, [365]), (20, [365, 8])])
+async def test_price_fetch_is_refreshed_when_training_crosses_utc_midnight(
+    recovery_mocks, elapsed_minutes, expected_days
+):
+    started = datetime(2026, 1, 10, 23, 50, tzinfo=UTC)
+    with time_machine.travel(started, tick=False) as clock:
+
+        async def train(area):
+            clock.move_to(started + timedelta(minutes=elapsed_minutes))
+
+        recovery_mocks["train_models"].side_effect = train
+        await module.bootstrap()
+    assert [call.kwargs["days"] for call in recovery_mocks["backfill_prices"].await_args_list] == (
+        expected_days
+    )
+    assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
+        "DK1",
+        "DK2",
+    ]
 
 
 async def test_forecast_that_expires_during_training_is_recovered(recovery_mocks):
@@ -293,3 +315,47 @@ async def test_empty_backfill_only_blocks_area_without_persisted_history(
     recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
     recovery_mocks["run_forecast"].assert_awaited_once_with(healthy_area)
     recovery_mocks["train_models"].assert_not_awaited()
+
+
+async def test_midnight_refresh_restores_persisted_coverage_for_both_areas(
+    database, recovery_mocks, test_settings
+):
+    from nordpool_predictor.ingestion import prices
+
+    test_settings.training_window_days = 8
+    started = datetime(2026, 1, 10, 23, 50, tzinfo=UTC)
+
+    async def fetch(start, end, areas):
+        return [
+            {
+                "area": area,
+                "ts": start + timedelta(minutes=15 * step),
+                "price_dkk_kwh": 0.5,
+                "source": "test",
+            }
+            for area in areas
+            for step in range(int((end - start).total_seconds() // 900))
+        ]
+
+    with (
+        time_machine.travel(started, tick=False) as clock,
+        patch.object(prices, "get_settings", return_value=test_settings),
+        patch.object(prices, "_fetch_chunk", AsyncMock(side_effect=fetch)) as request,
+        patch.object(module, "backfill_prices", _backfill_prices),
+        patch.object(module, "verify_price_history", _verify_price_history),
+    ):
+
+        async def train(area):
+            clock.move_to(datetime(2026, 1, 11, 0, 10, tzinfo=UTC))
+
+        recovery_mocks["train_models"].side_effect = train
+        await module.bootstrap()
+
+    assert [call.args[1] for call in request.await_args_list] == [
+        datetime(2026, 1, 11, tzinfo=UTC),
+        datetime(2026, 1, 12, tzinfo=UTC),
+    ]
+    assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
+        "DK1",
+        "DK2",
+    ]
