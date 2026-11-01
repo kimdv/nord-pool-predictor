@@ -47,11 +47,13 @@ async def _request_with_retry(
     return {}
 
 
-def _collect_weather_points() -> list[tuple[str, WeatherPoint]]:
+def _collect_weather_points(area: str | None = None) -> list[tuple[str, WeatherPoint]]:
     """Return a flat list of (area_code_prefix, WeatherPoint) across all areas."""
     settings = get_settings()
     points: list[tuple[str, WeatherPoint]] = []
     for _code, area_cfg in settings.areas.items():
+        if area is not None and _code != area:
+            continue
         for wp in area_cfg.weather_points:
             points.append((_code, wp))
     return points
@@ -127,9 +129,9 @@ async def _upsert_observations(rows: list[dict[str, Any]]) -> int:
     return len(rows)
 
 
-async def ingest_weather_forecasts() -> None:
+async def ingest_weather_forecasts(*, area: str | None = None) -> None:
     """Fetch the latest forecasts for every configured weather point."""
-    points = _collect_weather_points()
+    points = _collect_weather_points(area)
     if not points:
         logger.warning("No weather points configured; skipping forecast ingestion")
         return
@@ -157,9 +159,9 @@ async def ingest_weather_forecasts() -> None:
     logger.info("Weather forecast ingestion complete: %d total rows", total)
 
 
-async def backfill_weather(days: int = 365) -> None:
+async def backfill_weather(days: int = 365, *, area: str | None = None) -> None:
     """Fetch historical weather observations for every configured weather point."""
-    points = _collect_weather_points()
+    points = _collect_weather_points(area)
     if not points:
         logger.warning("No weather points configured; skipping weather backfill")
         return

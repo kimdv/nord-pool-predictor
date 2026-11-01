@@ -25,6 +25,20 @@ def test_future_prices_cannot_change_issuance_rolling_features():
     assert actual["price_rolling_mean_24h"].nunique() == 1
 
 
+@pytest.mark.parametrize("minutes", [0, 8])
+def test_rolling_features_use_prices_strictly_before_off_grid_issuance(minutes):
+    index = pd.date_range("2026-01-01", periods=1000, freq="15min", tz=UTC)
+    history = pd.DataFrame({TARGET: np.arange(1000, dtype=float)}, index=index)
+    targets = pd.DataFrame(index=index[-2:])
+    issued = index[700] + pd.Timedelta(minutes=minutes)
+    result = add_issuance_price_features(targets.copy(), history, issued)
+    expected = history.loc[history.index < issued, TARGET].iloc[-96:].mean()
+    assert result["price_rolling_mean_24h"].tolist() == [expected, expected]
+    history.loc[history.index >= issued, TARGET] = 99999
+    actual = add_issuance_price_features(targets.copy(), history, issued)
+    pd.testing.assert_frame_equal(actual, result)
+
+
 @pytest.mark.parametrize(
     "kind,table,owner,field,feature",
     [

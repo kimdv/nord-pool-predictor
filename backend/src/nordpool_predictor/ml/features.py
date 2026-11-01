@@ -599,8 +599,11 @@ def add_issuance_price_features(
                 df[f"price_rolling_{label}_{hours}h"] = np.nan
         return df
     cutoffs = issuance_times(df.index, issued_at)
+    # Values are shifted one quarter: ceiling includes the current quarter for
+    # off-grid issuance while still excluding prices at or after issuance.
+    sample_at = pd.DatetimeIndex(cutoffs).ceil("15min")
     index = pd.date_range(
-        history.index.min(), max(history.index.max(), cutoffs.max()), freq="15min"
+        history.index.min(), max(history.index.max(), sample_at.max()), freq="15min"
     )
     prices = history[TARGET].reindex(index).shift(1)
     for hours, steps in [(24, 96), (168, 672)]:
@@ -608,7 +611,5 @@ def add_issuance_price_features(
             ("mean", prices.rolling(steps, min_periods=1).mean()),
             ("std", prices.rolling(steps, min_periods=1).std()),
         ]:
-            df[f"price_rolling_{label}_{hours}h"] = values.reindex(
-                pd.DatetimeIndex(cutoffs)
-            ).to_numpy()
+            df[f"price_rolling_{label}_{hours}h"] = values.reindex(sample_at).to_numpy()
     return df

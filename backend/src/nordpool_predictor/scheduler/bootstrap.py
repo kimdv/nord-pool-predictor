@@ -73,34 +73,60 @@ async def bootstrap() -> None:
     settings = get_settings()
     models = await ready_models()
     needs_training = [area for area in settings.area_codes if area not in models]
+    failures: list[str] = []
+
+    async def attempt(label, operation, *args, **kwargs) -> bool:
+        try:
+            await operation(*args, **kwargs)
+        except Exception:
+            logger.exception("Bootstrap preparation or recovery failed: %s", label)
+            failures.append(label)
+            return False
+        return True
+
+    shared_history_ready = True
     if needs_training:
-        # Backfills are idempotent. Never infer complete history from another area's newest row.
-        for operation in (
-            backfill_prices,
-            backfill_weather,
-            backfill_production,
-            backfill_crossborder,
+        # These sources fetch both areas together. A failure affects new training,
+        # but must not block forecast recovery for already usable models.
+        for label, operation in (
+            ("price backfill", backfill_prices),
+            ("production backfill", backfill_production),
+            ("crossborder backfill", backfill_crossborder),
         ):
-            await operation(days=settings.training_window_days)
+            succeeded = await attempt(label, operation, days=settings.training_window_days)
+            shared_history_ready = shared_history_ready and succeeded
 
     needs_forecast = set(needs_training)
     for area, version in models.items():
         if area in settings.area_codes and not await forecast_ready(area, version):
             needs_forecast.add(area)
-    if needs_forecast:
-        await ingest_weather_forecasts()
-        await ingest_production_forecasts()
 
-    failures: list[str] = []
-    for area in settings.area_codes:
-        try:
-            if area in needs_training:
-                await train_models(area)
-            if area in needs_forecast:
-                await run_forecast(area)
-        except Exception:
-            logger.exception("Bootstrap incomplete for %s", area)
-            failures.append(area)
+    usable_areas = set(models)
+    for area in needs_training:
+        history_ready = await attempt(
+            f"{area} weather backfill",
+            backfill_weather,
+            days=settings.training_window_days,
+            area=area,
+        )
+        if shared_history_ready and history_ready:
+            if await attempt(f"{area} training", train_models, area):
+                usable_areas.add(area)
+
+    forecast_areas = [
+        area for area in settings.area_codes if area in needs_forecast and area in usable_areas
+    ]
+    if forecast_areas:
+        # Training is independent of live ingestion. Weather is fetched per area
+        # so an upstream failure for one area cannot prevent another's recovery.
+        production_ready = await attempt("production forecasts", ingest_production_forecasts)
+        for area in forecast_areas:
+            weather_ready = await attempt(
+                f"{area} weather forecasts", ingest_weather_forecasts, area=area
+            )
+            if weather_ready and production_ready:
+                await attempt(f"{area} forecast", run_forecast, area)
+
     if failures:
-        raise RuntimeError(f"Bootstrap incomplete for areas: {', '.join(failures)}")
+        raise RuntimeError(f"Bootstrap incomplete: {', '.join(failures)}")
     logger.info("All configured areas have usable models and forecasts")

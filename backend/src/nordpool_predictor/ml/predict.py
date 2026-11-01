@@ -69,14 +69,15 @@ def _build_forecast_features(
     computed for the first forecast steps.  Weather and production features
     transparently fall back to forecasts for future timestamps.
     """
+    grid_anchor = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
     target_ts = pd.date_range(
-        now + timedelta(minutes=15),
+        grid_anchor + timedelta(minutes=15),
         periods=horizon_steps,
         freq="15min",
     )
 
     history_start = now - timedelta(hours=192)
-    hist = load_prices(area, history_start, now + timedelta(minutes=15))
+    hist = load_prices(area, history_start, now)
 
     future = pd.DataFrame({TARGET: np.nan}, index=target_ts)
     future.index.name = "ts"
@@ -118,7 +119,6 @@ async def run_forecast(area: str, horizon_steps: int = 672) -> str:
     """Produce a price forecast for *area* and return the ``run_id``."""
     logger.info("Starting forecast for %s (horizon_steps=%d)", area, horizon_steps)
     now = datetime.now(UTC)
-    now = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
 
     # 1. Resolve the active model -------------------------------------------
     async with get_session() as session:
