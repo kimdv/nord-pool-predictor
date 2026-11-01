@@ -334,3 +334,7 @@ bootstrap request, and a restart resumes the remaining areas.
 Replacement forecasts require a complete eight-day quarter-hour price history
 for their area. Bootstrap checks persisted coverage even when ingestion returns
 successfully, and missing history does not block recovery for other areas.
+Each replacement uses one issuance cutoff, captured after live covariate ingestion,
+for both price validation and prediction. Readiness is checked again after recovery
+so forecasts that expired while another area was recovering are regenerated.
+Each area gets one recovery attempt per bootstrap; remaining gaps fail the job.

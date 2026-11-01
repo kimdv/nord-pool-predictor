@@ -116,10 +116,12 @@ def _build_forecast_features(
 # ---------------------------------------------------------------------------
 
 
-async def run_forecast(area: str, horizon_steps: int = 672) -> str:
+async def run_forecast(
+    area: str, horizon_steps: int = 672, *, issued_at: datetime | None = None
+) -> str:
     """Produce a price forecast for *area* and return the ``run_id``."""
     logger.info("Starting forecast for %s (horizon_steps=%d)", area, horizon_steps)
-    now = datetime.now(UTC)
+    now = issued_at if issued_at is not None else datetime.now(UTC)
 
     # 1. Resolve the active model -------------------------------------------
     async with get_session() as session:

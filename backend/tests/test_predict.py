@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 import time_machine
 
 from nordpool_predictor.ml import predict
 from nordpool_predictor.ml.features import TARGET
 
 
-async def test_forecast_persists_and_uses_actual_issuance(mock_db_session):
+@pytest.mark.parametrize("explicit_issuance", [False, True])
+async def test_forecast_persists_and_uses_actual_issuance(mock_db_session, explicit_issuance):
     issued = datetime(2026, 1, 1, 12, 8, 37, tzinfo=UTC)
     targets = pd.date_range("2026-01-01 12:15", periods=2, freq="15min", tz=UTC)
     factory, session = mock_db_session
@@ -18,7 +20,7 @@ async def test_forecast_persists_and_uses_actual_issuance(mock_db_session):
     estimator = MagicMock(feature_name_=["temp_mean"])
     estimator.predict.return_value = [0.5, 0.5]
     with (
-        time_machine.travel(issued, tick=False),
+        time_machine.travel(issued + timedelta(days=1 if explicit_issuance else 0), tick=False),
         patch.object(predict, "get_session", factory),
         patch.object(
             predict, "_load_models", return_value=dict.fromkeys(["p10", "p50", "p90"], estimator)
@@ -29,7 +31,8 @@ async def test_forecast_persists_and_uses_actual_issuance(mock_db_session):
             return_value=(pd.DataFrame({"temp_mean": [7, 7]}, index=targets), targets),
         ) as build,
     ):
-        await predict.run_forecast("DK1", horizon_steps=2)
+        kwargs = {"issued_at": issued} if explicit_issuance else {}
+        await predict.run_forecast("DK1", horizon_steps=2, **kwargs)
     build.assert_called_once_with("DK1", issued, 2)
     assert session.execute.call_args_list[1].args[1]["issued_at"] == issued
 

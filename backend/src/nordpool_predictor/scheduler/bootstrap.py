@@ -51,7 +51,7 @@ async def ready_models() -> dict[str, str]:
     return ready
 
 
-async def forecast_ready(area: str, model_version: str) -> bool:
+async def forecast_ready(area: str, model_version: str, *, as_of: datetime | None = None) -> bool:
     async with get_session() as session:
         return bool(
             (
@@ -60,18 +60,22 @@ async def forecast_ready(area: str, model_version: str) -> bool:
             SELECT EXISTS (
                 SELECT 1 FROM forecast_runs fr JOIN forecast_values fv USING (run_id)
                 WHERE fr.area = :area AND fr.model_version = :version
-                  AND fr.status IN ('completed', 'scored') AND fv.ts > NOW()
+                  AND fr.status IN ('completed', 'scored') AND fv.ts > :as_of
             )
         """),
-                    {"area": area, "version": model_version},
+                    {
+                        "area": area,
+                        "version": model_version,
+                        "as_of": as_of if as_of is not None else datetime.now(UTC),
+                    },
                 )
             ).scalar()
         )
 
 
-async def verify_price_history(area: str) -> None:
+async def verify_price_history(area: str, *, issued_at: datetime | None = None) -> None:
     """Require the persisted quarter-hour grid consumed by prediction for this area."""
-    now = datetime.now(UTC)
+    now = issued_at if issued_at is not None else datetime.now(UTC)
     end = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
     if end < now:
         end += timedelta(minutes=15)
@@ -97,7 +101,7 @@ async def verify_price_history(area: str) -> None:
 async def bootstrap() -> None:
     """Reconcile each configured area's usable model and current forecast."""
     settings = get_settings()
-    models = await ready_models()
+    models = dict(await ready_models())
     needs_training = [area for area in settings.area_codes if area not in models]
     failures: list[str] = []
 
@@ -134,7 +138,9 @@ async def bootstrap() -> None:
                     hour=0, minute=0, second=0, microsecond=0
                 ) + timedelta(days=1)
 
-    usable_areas = set(models)
+    async def train_area(area: str) -> None:
+        models[area] = await train_models(area)
+
     for area in needs_training:
         history_ready = await attempt(
             f"{area} weather backfill",
@@ -143,45 +149,65 @@ async def bootstrap() -> None:
             area=area,
         )
         if shared_history_ready and history_ready:
-            if await attempt(f"{area} training", train_models, area):
-                usable_areas.add(area)
+            await attempt(f"{area} training", train_area, area)
 
-    # Training/backfills can take hours. Check reused forecasts after that work
-    # so a forecast that expired during training is included in recovery.
-    needs_forecast = set(needs_training)
-    for area, version in models.items():
-        if area not in settings.area_codes:
-            continue
-        try:
-            ready = await forecast_ready(area, version)
-        except Exception:
-            logger.exception("Bootstrap forecast readiness check failed for %s", area)
-            failures.append(f"{area} forecast readiness")
-            continue
-        if not ready:
-            needs_forecast.add(area)
+    attempted_areas: set[str] = set()
+    failed_areas: set[str] = set()
+    while True:
+        # Reconcile again after recovery: previously-ready forecasts can expire
+        # while another area is fetching data or generating its forecast.
+        checked_at = datetime.now(UTC)
+        forecast_areas = []
+        for area in settings.area_codes:
+            if area not in models or area in failed_areas:
+                continue
+            try:
+                ready = await forecast_ready(area, models[area], as_of=checked_at)
+            except Exception:
+                logger.exception("Bootstrap forecast readiness check failed for %s", area)
+                failures.append(f"{area} forecast readiness")
+                failed_areas.add(area)
+                continue
+            if ready:
+                continue
+            if area in attempted_areas:
+                # Each area gets one recovery attempt. Never spin indefinitely
+                # or report success if a generated forecast is already expired.
+                failures.append(f"{area} forecast readiness after recovery")
+                failed_areas.add(area)
+            else:
+                forecast_areas.append(area)
+        if not forecast_areas:
+            break
 
-    forecast_areas = [
-        area for area in settings.area_codes if area in needs_forecast and area in usable_areas
-    ]
-    if forecast_areas:
-        # Reused models also need the 192-hour price window consumed by prediction.
-        # Retry a failed full-window price backfill with this smaller recovery window.
-        if price_window_fetched_until is None or datetime.now(UTC) >= price_window_fetched_until:
-            await attempt("recent price backfill", backfill_prices, days=PRICE_HISTORY_DAYS)
-        # Training is independent of live ingestion. Weather is fetched per area
-        # so an upstream failure for one area cannot prevent another's recovery.
         production_ready = await attempt("production forecasts", ingest_production_forecasts)
         for area in forecast_areas:
-            # A successful request can still return no rows or omit an area.
-            # Cached usable history can also survive an upstream fetch failure.
-            if not await attempt(f"{area} price history", verify_price_history, area):
-                continue
+            attempted_areas.add(area)
             weather_ready = await attempt(
                 f"{area} weather forecasts", ingest_weather_forecasts, area=area
             )
-            if weather_ready and production_ready:
-                await attempt(f"{area} forecast", run_forecast, area)
+            if not weather_ready or not production_ready:
+                failed_areas.add(area)
+                continue
+
+            # Capture issuance after live covariates arrive. Price preparation,
+            # coverage validation and prediction must all use this same cutoff,
+            # even if their awaits cross a quarter-hour or UTC-day boundary.
+            issued_at = datetime.now(UTC)
+            if price_window_fetched_until is None or issued_at >= price_window_fetched_until:
+                await attempt("recent price backfill", backfill_prices, days=PRICE_HISTORY_DAYS)
+                # Avoid repeating a failed shared fetch for every area. Persisted
+                # coverage below still decides whether cached prices are usable.
+                price_window_fetched_until = issued_at.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ) + timedelta(days=1)
+            if not await attempt(
+                f"{area} price history", verify_price_history, area, issued_at=issued_at
+            ):
+                failed_areas.add(area)
+                continue
+            if not await attempt(f"{area} forecast", run_forecast, area, issued_at=issued_at):
+                failed_areas.add(area)
 
     if failures:
         raise RuntimeError(f"Bootstrap incomplete: {', '.join(failures)}")

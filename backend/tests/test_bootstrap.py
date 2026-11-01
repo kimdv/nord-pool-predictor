@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 import time_machine
@@ -18,12 +18,20 @@ async def test_partial_bootstrap_preserves_ready_area_and_completes_missing_area
     test_settings,
     existing_forecast,
 ):
+    completed = set()
+
+    async def ready(area, version, **kwargs):
+        return (area == "DK1" and existing_forecast) or area in completed
+
+    async def forecast_area(area, **kwargs):
+        completed.add(area)
+
     with (
         patch.object(module, "get_settings", return_value=test_settings),
         patch.object(module, "ready_models", AsyncMock(return_value={"DK1": "v1"})),
-        patch.object(module, "forecast_ready", AsyncMock(return_value=existing_forecast)),
-        patch.object(module, "train_models", AsyncMock()) as train,
-        patch.object(module, "run_forecast", AsyncMock()) as forecast,
+        patch.object(module, "forecast_ready", AsyncMock(side_effect=ready)) as check,
+        patch.object(module, "train_models", AsyncMock(return_value="v2")) as train,
+        patch.object(module, "run_forecast", AsyncMock(side_effect=forecast_area)) as forecast,
         patch.object(module, "verify_price_history", AsyncMock()),
         patch.object(module, "backfill_prices", AsyncMock()),
         patch.object(module, "backfill_weather", AsyncMock()),
@@ -34,6 +42,7 @@ async def test_partial_bootstrap_preserves_ready_area_and_completes_missing_area
     ):
         await module.bootstrap()
     train.assert_awaited_once_with("DK2")
+    check.assert_any_await("DK2", "v2", as_of=ANY)
     assert [call.args[0] for call in forecast.await_args_list] == (
         ["DK2"] if existing_forecast else ["DK1", "DK2"]
     )
@@ -46,7 +55,6 @@ def recovery_mocks(test_settings):
         stack.enter_context(
             patch.object(module, "ready_models", AsyncMock(return_value={"DK1": "v1"}))
         )
-        stack.enter_context(patch.object(module, "forecast_ready", AsyncMock(return_value=False)))
         operations = {
             name: stack.enter_context(patch.object(module, name, AsyncMock()))
             for name in (
@@ -61,6 +69,12 @@ def recovery_mocks(test_settings):
                 "verify_price_history",
             )
         }
+        operations["train_models"].return_value = "trained"
+
+        async def ready(area, version, **kwargs):
+            return any(call.args[0] == area for call in operations["run_forecast"].await_args_list)
+
+        stack.enter_context(patch.object(module, "forecast_ready", AsyncMock(side_effect=ready)))
         yield operations
 
 
@@ -70,7 +84,7 @@ async def test_backfill_failure_still_recovers_area_with_usable_model(recovery_m
     with pytest.raises(RuntimeError, match="Bootstrap incomplete"):
         await module.bootstrap()
     recovery_mocks["train_models"].assert_not_awaited()
-    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1")
+    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1", issued_at=ANY)
 
 
 async def test_area_weather_failure_does_not_block_other_area_or_training(recovery_mocks):
@@ -82,7 +96,7 @@ async def test_area_weather_failure_does_not_block_other_area_or_training(recove
     with pytest.raises(RuntimeError, match="DK2 weather forecasts"):
         await module.bootstrap()
     recovery_mocks["train_models"].assert_awaited_once_with("DK2")
-    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1")
+    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1", issued_at=ANY)
 
 
 async def test_live_production_failure_happens_after_training(recovery_mocks):
@@ -103,7 +117,7 @@ async def test_weather_backfill_is_isolated_per_training_area(recovery_mocks):
         with pytest.raises(RuntimeError, match="DK1 weather backfill"):
             await module.bootstrap()
     recovery_mocks["train_models"].assert_awaited_once_with("DK2")
-    recovery_mocks["run_forecast"].assert_awaited_once_with("DK2")
+    recovery_mocks["run_forecast"].assert_awaited_once_with("DK2", issued_at=ANY)
 
 
 @pytest.mark.parametrize("price_failure", [False, True])
@@ -135,7 +149,7 @@ async def test_failed_full_price_backfill_can_still_recover_existing_model(recov
     with pytest.raises(RuntimeError, match="price backfill"):
         await module.bootstrap()
     recovery_mocks["train_models"].assert_not_awaited()
-    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1")
+    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1", issued_at=ANY)
 
 
 @pytest.mark.parametrize("training_days,backfill_days", [(2, [2, 8]), (8, [8]), (365, [365])])
@@ -147,7 +161,7 @@ async def test_training_backfill_must_cover_prediction_window(
     assert [call.kwargs["days"] for call in recovery_mocks["backfill_prices"].await_args_list] == (
         backfill_days
     )
-    recovery_mocks["run_forecast"].assert_any_await("DK1")
+    recovery_mocks["run_forecast"].assert_any_await("DK1", issued_at=ANY)
 
 
 @pytest.mark.parametrize("elapsed_minutes,expected_days", [(5, [365]), (20, [365, 8])])
@@ -159,6 +173,7 @@ async def test_price_fetch_is_refreshed_when_training_crosses_utc_midnight(
 
         async def train(area):
             clock.move_to(started + timedelta(minutes=elapsed_minutes))
+            return "trained"
 
         recovery_mocks["train_models"].side_effect = train
         await module.bootstrap()
@@ -177,15 +192,86 @@ async def test_forecast_that_expires_during_training_is_recovered(recovery_mocks
     async def train(area):
         nonlocal trained
         trained = True
+        return "trained"
 
-    async def ready(area, version):
-        return not trained
+    async def ready(area, version, **kwargs):
+        return not trained or any(
+            call.args[0] == area for call in recovery_mocks["run_forecast"].await_args_list
+        )
 
     recovery_mocks["train_models"].side_effect = train
     with patch.object(module, "forecast_ready", AsyncMock(side_effect=ready)) as check:
         await module.bootstrap()
     assert trained
-    check.assert_awaited_once_with("DK1", "v1")
+    check.assert_any_await("DK1", "v1", as_of=ANY)
+    assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
+        "DK1",
+        "DK2",
+    ]
+
+
+async def test_forecast_that_expires_during_another_areas_recovery_is_regenerated(recovery_mocks):
+    expiry = datetime(2026, 1, 11, tzinfo=UTC)
+
+    async def ready(area, version, *, as_of):
+        if any(call.args[0] == area for call in recovery_mocks["run_forecast"].await_args_list):
+            return True
+        return area == "DK1" and as_of < expiry
+
+    with (
+        time_machine.travel(expiry - timedelta(minutes=1), tick=False) as clock,
+        patch.object(module, "ready_models", AsyncMock(return_value={"DK1": "v1", "DK2": "v2"})),
+        patch.object(module, "forecast_ready", AsyncMock(side_effect=ready)),
+    ):
+
+        async def weather(*, area):
+            if area == "DK2":
+                clock.move_to(expiry + timedelta(minutes=1))
+
+        recovery_mocks["ingest_weather_forecasts"].side_effect = weather
+        await module.bootstrap()
+    assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
+        "DK2",
+        "DK1",
+    ]
+
+
+@pytest.mark.parametrize("rollover_during", ["weather", "coverage"])
+async def test_coverage_and_prediction_share_cutoff_across_midnight(
+    recovery_mocks, rollover_during
+):
+    before = datetime(2026, 1, 10, 23, 59, tzinfo=UTC)
+    after = datetime(2026, 1, 11, 0, 1, tzinfo=UTC)
+    validated = {}
+    with time_machine.travel(before, tick=False) as clock:
+
+        async def weather(*, area):
+            if area == "DK1" and rollover_during == "weather":
+                clock.move_to(after)
+
+        async def verify(area, *, issued_at):
+            validated[area] = issued_at
+            if area == "DK1" and rollover_during == "coverage":
+                clock.move_to(after)
+
+        recovery_mocks["ingest_weather_forecasts"].side_effect = weather
+        recovery_mocks["verify_price_history"].side_effect = verify
+        await module.bootstrap()
+    assert validated["DK1"] == (after if rollover_during == "weather" else before)
+    for call in recovery_mocks["run_forecast"].await_args_list:
+        assert call.kwargs["issued_at"] == validated[call.args[0]]
+    assert [call.kwargs["days"] for call in recovery_mocks["backfill_prices"].await_args_list] == [
+        365,
+        8,
+    ]
+
+
+async def test_generated_forecast_that_is_still_unready_is_reported_without_retry_loop(
+    recovery_mocks,
+):
+    with patch.object(module, "forecast_ready", AsyncMock(return_value=False)):
+        with pytest.raises(RuntimeError, match="forecast readiness after recovery"):
+            await module.bootstrap()
     assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
         "DK1",
         "DK2",
@@ -203,10 +289,10 @@ async def test_forecast_that_expires_during_training_is_recovered(recovery_mocks
 async def test_readiness_query_failure_does_not_block_other_area_recovery(
     recovery_mocks, models, failed_area, healthy_area
 ):
-    async def ready(area, version):
+    async def ready(area, version, **kwargs):
         if area == failed_area:
             raise RuntimeError("readiness query unavailable")
-        return False
+        return any(call.args[0] == area for call in recovery_mocks["run_forecast"].await_args_list)
 
     with (
         patch.object(module, "ready_models", AsyncMock(return_value=models)),
@@ -216,8 +302,9 @@ async def test_readiness_query_failure_does_not_block_other_area_recovery(
             RuntimeError, match=f"Bootstrap incomplete: {failed_area} forecast readiness"
         ):
             await module.bootstrap()
-    assert [call.args[0] for call in check.await_args_list] == list(models)
-    recovery_mocks["run_forecast"].assert_awaited_once_with(healthy_area)
+    assert sum(call.args[0] == failed_area for call in check.await_args_list) == 1
+    assert any(call.args[0] == healthy_area for call in check.await_args_list)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(healthy_area, issued_at=ANY)
     if healthy_area not in models:
         recovery_mocks["train_models"].assert_awaited_once_with(healthy_area)
     else:
@@ -345,7 +432,7 @@ async def test_empty_backfill_only_blocks_area_without_persisted_history(
         with pytest.raises(RuntimeError, match=f"{missing_area} price history"):
             await module.bootstrap()
     recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
-    recovery_mocks["run_forecast"].assert_awaited_once_with(healthy_area)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(healthy_area, issued_at=ANY)
     recovery_mocks["train_models"].assert_not_awaited()
 
 
@@ -379,6 +466,7 @@ async def test_midnight_refresh_restores_persisted_coverage_for_both_areas(
 
         async def train(area):
             clock.move_to(datetime(2026, 1, 11, 0, 10, tzinfo=UTC))
+            return "trained"
 
         recovery_mocks["train_models"].side_effect = train
         await module.bootstrap()
