@@ -204,7 +204,7 @@ async def test_readiness_checks_each_input_by_data_time(
     assert all(not item["is_stale"] for name, item in sources.items() if name != source)
 
 
-@pytest.mark.parametrize("issued_offset", ["-3 days", "1 hour"])
+@pytest.mark.parametrize("issued_offset", [timedelta(days=-3), timedelta(hours=1)])
 async def test_forecast_inputs_require_recent_available_issuance(
     database, test_settings, issued_offset
 ):
