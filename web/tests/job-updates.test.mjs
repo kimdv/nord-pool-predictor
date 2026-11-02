@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasNewlyFinishedJobs, hasBootstrapFinished } from "../lib/job-updates.ts";
-
-for (const previous of [null, false, true]) {
-  for (const current of [false, true]) {
-    test(`bootstrap transition ${previous} -> ${current}`, () => {
-      assert.equal(hasBootstrapFinished(previous, current), previous === true && !current);
-    });
-  }
-}
+import { hasNewlyFinishedJobs } from "../lib/job-updates.ts";
 
 function job(overrides = {}) {
   return {
@@ -29,6 +21,17 @@ function snapshot(...jobs) {
 test("the initial snapshot does not request a redundant dashboard refresh", () => {
   assert.equal(hasNewlyFinishedJobs(null, snapshot(job())), false);
 });
+
+for (const status of ["completed", "failed"]) {
+  test(`bootstrap ${status} before the first poll still refreshes`, () => {
+    assert.equal(hasNewlyFinishedJobs(null, snapshot(job({job_type: "bootstrap", last_status: status}))), true);
+  });
+  test(`bootstrap ${status} entirely between polls still refreshes`, () => {
+    const current = snapshot(job({job_type: "bootstrap", last_status: status}));
+    assert.equal(hasNewlyFinishedJobs({}, current), true);
+    assert.equal(hasNewlyFinishedJobs(current, current), false);
+  });
+}
 
 test("an unchanged completed job does not refresh on every poll", () => {
   assert.equal(hasNewlyFinishedJobs(snapshot(job()), snapshot(job())), false);

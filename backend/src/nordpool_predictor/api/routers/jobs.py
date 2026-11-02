@@ -81,8 +81,9 @@ _SUMMARY_SQL = f"""
 WITH activity AS (
     SELECT job_type, status, started_at, finished_at FROM job_runs
     UNION ALL
-    SELECT job_name, 'running', COALESCE(started_at, created_at), finished_at
-    FROM job_requests WHERE status IN ('pending', 'running')
+    SELECT job_name, CASE WHEN status = 'pending' THEN 'running' ELSE status END,
+           COALESCE(started_at, created_at), finished_at
+    FROM job_requests WHERE status IN ('pending', 'running') OR job_name = 'bootstrap'
 ), latest AS (
     SELECT job_type, MAX(started_at) AS max_started_at
     FROM activity

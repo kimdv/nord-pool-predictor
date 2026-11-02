@@ -16,6 +16,26 @@ from nordpool_predictor.scheduler import bootstrap
 from nordpool_predictor.scheduler.queue import enqueue_job
 
 
+@pytest.mark.parametrize("status", ["completed", "failed"])
+async def test_bootstrap_completion_remains_in_job_summary(database, status):
+    from nordpool_predictor.api.routers.jobs import jobs_summary
+
+    job_id = await enqueue_job("bootstrap")
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            UPDATE job_requests SET status = :status, started_at = NOW(), finished_at = NOW()
+            WHERE job_id = :id
+        """),
+            {"status": status, "id": job_id},
+        )
+    first = {row.job_type: row for row in await jobs_summary()}
+    second = {row.job_type: row for row in await jobs_summary()}
+    assert first["bootstrap"].last_status == status
+    assert first["bootstrap"].last_finished_at is not None
+    assert second["bootstrap"] == first["bootstrap"]
+
+
 async def seed_fresh_sources(database, settings):
     async with database.begin() as conn:
         for area in settings.area_codes:
