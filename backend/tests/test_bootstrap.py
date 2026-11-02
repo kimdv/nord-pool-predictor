@@ -339,7 +339,7 @@ async def test_ready_models_reject_missing_artifacts(database):
             VALUES ('test', 'test', 'DK1', 'direct', 'v2-asof', NOW(), '/missing', TRUE)
         """)
         )
-    with patch.object(module, "_load_models", side_effect=FileNotFoundError):
+    with patch("nordpool_predictor.ml.predict._load_models", side_effect=FileNotFoundError):
         assert await module.ready_models() == {}
 
 

@@ -75,7 +75,6 @@ async def test_midnight_recovery_uses_validated_inputs_and_repairs_expired_forec
         patch.object(bootstrap, "get_settings", return_value=test_settings),
         patch.object(prices, "get_settings", return_value=test_settings),
         patch.object(prices, "_fetch_chunk", AsyncMock(side_effect=fetch)),
-        patch.object(bootstrap, "_load_models", side_effect=load_models),
         patch.object(predict, "_load_models", side_effect=load_models),
         patch.object(bootstrap, "ingest_production_forecasts", AsyncMock()),
         patch("nordpool_predictor.ml.features._get_sync_engine", return_value=sync_database),

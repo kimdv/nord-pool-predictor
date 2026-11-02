@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -27,6 +29,10 @@ from nordpool_predictor.ml.features import (
 
 logger = logging.getLogger(__name__)
 PRICE_HISTORY_DAYS = 8
+
+
+class ModelUnavailableError(ValueError):
+    """No candidate has usable model artifacts."""
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +63,27 @@ def _load_models(
         models[q] = joblib.load(path)
         logger.info("Loaded %s model from %s", q, path)
     return models
+
+
+async def select_usable_model(
+    area: str, candidates: Sequence[Mapping[str, object]]
+) -> tuple[str, dict[str, object]]:
+    """Load the first usable candidate, in the caller's preference order."""
+    last_error = None
+    for candidate in candidates:
+        version = str(candidate["model_version"])
+        try:
+            models = await asyncio.to_thread(
+                _load_models, version, str(candidate["artifact_path"]), area
+            )
+        except Exception as exc:
+            logger.exception("Skipping unusable model artifacts for %s (%s)", area, version)
+            last_error = exc
+        else:
+            return version, models
+    raise ModelUnavailableError(
+        f"No usable active compatible model for area {area}"
+    ) from last_error
 
 
 def _build_forecast_features(
@@ -136,24 +163,22 @@ async def run_forecast(
     if model_version is not None:
         query += "AND model_version = :model_version "
         params["model_version"] = model_version
-    query += "ORDER BY trained_at DESC, model_version DESC LIMIT 1"
+    query += "ORDER BY trained_at DESC, model_version DESC"
     async with get_session() as session:
         result = await session.execute(text(query), params)
-        row = result.fetchone()
+        candidates = result.mappings().all()
 
-    if row is None:
+    if not candidates:
         if model_version is not None:
             raise ValueError(
                 f"Requested model {model_version} is not active or compatible for area {area}"
             )
         raise ValueError(f"No active compatible model for area {area}")
 
-    model_version = row[0]
-    artifact_path: str = row[1]
-    logger.info("Active model for %s: %s", area, model_version)
-
-    # 2. Load quantile models ------------------------------------------------
-    models = _load_models(model_version, artifact_path, area)
+    # Pinned queries contain only the requested version. Unpinned refreshes
+    # share bootstrap's artifact-aware fallback across all compatible actives.
+    model_version, models = await select_usable_model(area, candidates)
+    logger.info("Usable active model for %s: %s", area, model_version)
 
     # 3. Create a forecast_run record ----------------------------------------
     run_id = str(uuid.uuid4())

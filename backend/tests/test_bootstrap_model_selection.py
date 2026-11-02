@@ -74,7 +74,6 @@ async def test_bootstrap_forecasts_only_with_the_validated_model(
 
     with (
         patch.object(bootstrap, "get_settings", return_value=test_settings),
-        patch.object(bootstrap, "_load_models", side_effect=load_models),
         patch.object(predict, "_load_models", side_effect=load_models),
         patch.object(predict, "_build_forecast_features", side_effect=build_features),
         patch.object(bootstrap, "backfill_prices", AsyncMock()),

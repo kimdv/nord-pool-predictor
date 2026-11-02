@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -15,7 +14,12 @@ from nordpool_predictor.ingestion.production import (
     ingest_production_forecasts,
 )
 from nordpool_predictor.ingestion.weather import backfill_weather, ingest_weather_forecasts
-from nordpool_predictor.ml.predict import PRICE_HISTORY_DAYS, _load_models, run_forecast
+from nordpool_predictor.ml.predict import (
+    PRICE_HISTORY_DAYS,
+    ModelUnavailableError,
+    run_forecast,
+    select_usable_model,
+)
 from nordpool_predictor.ml.train import train_models
 
 logger = logging.getLogger(__name__)
@@ -29,25 +33,24 @@ async def ready_models() -> dict[str, str]:
                     text("""
             SELECT area, model_version, artifact_path FROM model_versions
             WHERE is_active = TRUE AND feature_set_version = 'v2-asof'
-            ORDER BY trained_at DESC
+            ORDER BY trained_at DESC, model_version DESC
         """)
                 )
             )
             .mappings()
             .all()
         )
-    ready: dict[str, str] = {}
+    candidates: dict[str, list] = {}
     for row in rows:
-        if row["area"] in ready:
-            continue
+        candidates.setdefault(row["area"], []).append(row)
+    ready: dict[str, str] = {}
+    for area, area_candidates in candidates.items():
         try:
-            await asyncio.to_thread(
-                _load_models, row["model_version"], row["artifact_path"], row["area"]
-            )
-        except Exception:
-            logger.exception("Model artifacts unavailable for %s", row["area"])
+            version, _models = await select_usable_model(area, area_candidates)
+        except ModelUnavailableError:
+            logger.exception("Model artifacts unavailable for %s", area)
         else:
-            ready[row["area"]] = row["model_version"]
+            ready[area] = version
     return ready
 
 
