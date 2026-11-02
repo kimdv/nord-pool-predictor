@@ -18,6 +18,7 @@ VERSION = "lgbm-DK1-20260101-000000"
 
 @pytest.fixture
 def artifact_bundle(tmp_path, test_settings):
+    artifacts._load_quantile.cache_clear()
     test_settings.model_dir = str(tmp_path)
     model = SimpleNamespace(feature_name_=["a", "b"], feature_importances_=np.array([2, 5]))
     paths = {}
@@ -73,3 +74,56 @@ def test_manifest_identity_and_path_escape_are_rejected(artifact_bundle):
         artifacts.load_models("different-version", manifest, "DK1")
     with pytest.raises(ValueError, match="outside"):
         artifacts.load_models(VERSION, "../outside.json", "DK1")
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_relative_model_directory(artifact_bundle, test_settings, monkeypatch, legacy):
+    root, manifest = artifact_bundle
+    monkeypatch.chdir(root.parent)
+    test_settings.model_dir = root.name
+    path = root.name if legacy else manifest
+
+    models = artifacts.load_models(VERSION, path, "DK1")
+
+    assert set(models) == set(artifacts.QUANTILES)
+    assert artifacts.load_feature_importance(VERSION, path, "DK1")[0] == {
+        "feature": "b",
+        "importance": 5.0,
+    }
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("quantile", artifacts.QUANTILES)
+@pytest.mark.parametrize("loader", [artifacts.load_models, artifacts.load_feature_importance])
+def test_quantile_symlink_escape_rejected_before_loading(
+    artifact_bundle, legacy, quantile, loader
+):
+    root, manifest = artifact_bundle
+    path = root / f"lgbm-DK1-{quantile}-20260101-000000.joblib"
+    outside = root.parent / f"{root.name}-{quantile}.joblib"
+    path.replace(outside)
+    path.symlink_to(outside)
+
+    with patch.object(artifacts.joblib, "load") as load:
+        with pytest.raises(ValueError, match="Quantile path is outside MODEL_DIR"):
+            loader(VERSION, str(root) if legacy else manifest, "DK1")
+    load.assert_not_called()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_quantile_symlink_inside_model_directory_is_supported(artifact_bundle, legacy):
+    root, manifest = artifact_bundle
+    path = root / "lgbm-DK1-p50-20260101-000000.joblib"
+    target = root / "shared-p50.joblib"
+    path.rename(target)
+    path.symlink_to(target)
+    registration = str(root) if legacy else manifest
+
+    assert artifacts.load_models(VERSION, registration, "DK1")["p50"].feature_name_ == [
+        "a",
+        "b",
+    ]
+    assert artifacts.load_feature_importance(VERSION, registration, "DK1")[0] == {
+        "feature": "b",
+        "importance": 5.0,
+    }

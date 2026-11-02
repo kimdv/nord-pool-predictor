@@ -46,7 +46,9 @@ def write_manifest(
 
 def _resolve(version: str, artifact_path: str, area: str) -> tuple[dict[str, Path], dict | None]:
     root = Path(get_settings().model_dir).resolve()
-    path = (root / artifact_path).resolve()
+    registration = Path(artifact_path)
+    # Manifests store root-relative filenames; legacy directories are CWD-relative.
+    path = (root / registration if registration.suffix == ".json" else registration).resolve()
     if not path.is_relative_to(root):
         raise ValueError("Artifact path is outside MODEL_DIR")
     if path.suffix == ".json":
@@ -61,7 +63,7 @@ def _resolve(version: str, artifact_path: str, area: str) -> tuple[dict[str, Pat
     else:
         # Legacy registrations store the directory rather than a manifest.
         suffix = version.removeprefix(f"lgbm-{area}-")
-        paths = {q: path / f"lgbm-{area}-{q}-{suffix}.joblib" for q in QUANTILES}
+        paths = {q: (path / f"lgbm-{area}-{q}-{suffix}.joblib").resolve() for q in QUANTILES}
         manifest = None
     if any(not item.is_relative_to(root) for item in paths.values()):
         raise ValueError("Quantile path is outside MODEL_DIR")
