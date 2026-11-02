@@ -29,22 +29,29 @@ _SOURCE_QUERIES: dict[str, str] = {
         FROM unnest(CAST(:owners AS text[])) AS expected(owner)
     """,
     "weather": """
-        SELECT (SELECT MAX(issued_at) FROM weather_forecasts
-                WHERE area = owner AND ts = :target_hour AND issued_at <= :now) AS last_updated
+        SELECT (SELECT CASE WHEN temperature_c IS NOT NULL OR wind_speed_ms IS NOT NULL
+                    OR cloud_cover_pct IS NOT NULL OR precipitation_mm IS NOT NULL
+                    OR solar_irradiance_wm2 IS NOT NULL THEN issued_at END
+                FROM weather_forecasts
+                WHERE area = owner AND ts = :target_hour AND issued_at <= :now
+                ORDER BY issued_at DESC LIMIT 1) AS last_updated
         FROM unnest(CAST(:owners AS text[])) AS expected(owner)
     """,
     "production": """
         SELECT (SELECT MAX(ts) FROM production_observations
-                WHERE area = owner AND ts <= :now) AS last_updated
+                WHERE area = owner AND ts <= :now
+                  AND (wind_mw IS NOT NULL OR solar_mw IS NOT NULL)) AS last_updated
         FROM unnest(CAST(:owners AS text[])) AS expected(owner)
         UNION ALL
-        SELECT (SELECT MAX(issued_at) FROM production_forecasts
-                WHERE area = owner AND ts = :target_hour AND issued_at <= :now) AS last_updated
+        SELECT (SELECT CASE WHEN wind_mw IS NOT NULL OR solar_mw IS NOT NULL
+                    THEN issued_at END FROM production_forecasts
+                WHERE area = owner AND ts = :target_hour AND issued_at <= :now
+                ORDER BY issued_at DESC LIMIT 1) AS last_updated
         FROM unnest(CAST(:owners AS text[])) AS expected(owner)
     """,
     "crossborder": """
         SELECT (SELECT MAX(ts) FROM crossborder_observations
-                WHERE connection = owner AND ts <= :now) AS last_updated
+                WHERE connection = owner AND ts <= :now AND flow_mw IS NOT NULL) AS last_updated
         FROM unnest(CAST(:owners AS text[])) AS expected(owner)
     """,
 }
@@ -68,11 +75,14 @@ async def health_check() -> HealthResponse:
                 point.id for area in settings.areas.values() for point in area.weather_points
             ],
             "production": settings.area_codes,
-            "crossborder": [
-                connection
-                for area in settings.area_codes
-                for connection in EXCHANGE_COLUMNS.get(area, {}).values()
-            ],
+            "crossborder": sorted(
+                {
+                    connection
+                    for mapping in EXCHANGE_COLUMNS.values()
+                    for connection in mapping.values()
+                    if any(area in connection.split("-") for area in settings.area_codes)
+                }
+            ),
         }
         async with get_session() as session:
             bootstrap_result = await session.execute(

@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from nordpool_predictor.api.routers import health
 from nordpool_predictor.config import WeatherPoint
+from nordpool_predictor.ingestion import crossborder, production
 from nordpool_predictor.ingestion.crossborder import EXCHANGE_COLUMNS
 from nordpool_predictor.scheduler import bootstrap
 from nordpool_predictor.scheduler.queue import enqueue_job
@@ -27,8 +28,8 @@ async def seed_fresh_sources(database, settings):
             )
             await conn.execute(
                 text("""
-                    INSERT INTO production_observations (area, ts, source)
-                    VALUES (:area, NOW(), 'test')
+                    INSERT INTO production_observations (area, ts, wind_mw, source)
+                    VALUES (:area, NOW(), 10, 'test')
                 """),
                 {"area": area},
             )
@@ -38,7 +39,12 @@ async def seed_fresh_sources(database, settings):
                 (
                     "crossborder_observations",
                     "connection",
-                    list(EXCHANGE_COLUMNS.get(area, {}).values()),
+                    [
+                        connection
+                        for mapping in EXCHANGE_COLUMNS.values()
+                        for connection in mapping.values()
+                        if area in connection.split("-")
+                    ],
                 ),
             ]:
                 for owner_id in ids:
@@ -49,10 +55,20 @@ async def seed_fresh_sources(database, settings):
                     if table.endswith("forecasts"):
                         columns += ", issued_at"
                         values += ", NOW()"
+                    measurement = {
+                        "weather_forecasts": "temperature_c",
+                        "production_forecasts": "wind_mw",
+                        "crossborder_observations": "flow_mw",
+                    }[table]
+                    columns += f", {measurement}"
+                    values += ", 10"
                     # Seed current and next hourly buckets, including the :45 rollover.
                     for offset in [0, 1] if table.endswith("forecasts") else [0]:
                         await conn.execute(
-                            text(f"INSERT INTO {table} ({columns}) VALUES ({values})"),
+                            text(
+                                f"INSERT INTO {table} ({columns}) VALUES ({values}) "
+                                "ON CONFLICT DO NOTHING"
+                            ),
                             {"owner": owner_id, "offset": offset},
                         )
         await conn.execute(
@@ -62,6 +78,28 @@ async def seed_fresh_sources(database, settings):
             VALUES ('test', 'test', 'DK1', 'direct', 'v2-asof', NOW(), '/tmp/test')
         """)
         )
+
+
+async def seed_fresh_forecasts(database, areas):
+    async with database.begin() as conn:
+        for area in areas:
+            run_id = (
+                await conn.execute(
+                    text("""
+                        INSERT INTO forecast_runs
+                            (area, model_version, issued_at, horizon_steps, status)
+                        VALUES (:area, 'test', NOW(), 672, 'completed') RETURNING run_id
+                    """),
+                    {"area": area},
+                )
+            ).scalar_one()
+            await conn.execute(
+                text("""
+                    INSERT INTO forecast_values (run_id, ts, horizon_step, predicted_price_dkk_kwh)
+                    VALUES (:run_id, NOW() + interval '1 hour', 1, 0.5)
+                """),
+                {"run_id": run_id},
+            )
 
 
 async def test_recent_failed_forecasts_do_not_hide_stale_successes(database, test_settings):
@@ -220,10 +258,12 @@ async def test_forecast_inputs_require_recent_available_issuance(
     assert {item.source for item in body.sources if item.is_stale} == {"weather", "production"}
 
 
-async def test_bootstrap_regenerates_stale_success_with_future_values(database, test_settings):
+async def test_bootstrap_restores_stale_forecast_and_observation_feeds(database, test_settings):
     test_settings._areas = {"DK1": test_settings.areas["DK1"]}
     await seed_fresh_sources(database, test_settings)
     async with database.begin() as conn:
+        for table in ["production_observations", "crossborder_observations"]:
+            await conn.execute(text(f"UPDATE {table} SET ts = ts - interval '3 days'"))
         await conn.execute(
             text("""
             INSERT INTO forecast_runs (area, model_version, issued_at, horizon_steps, status)
@@ -266,6 +306,35 @@ async def test_bootstrap_regenerates_stale_success_with_future_values(database, 
         patch.object(bootstrap, "verify_price_history", AsyncMock()),
         patch.object(bootstrap, "ingest_weather_forecasts", AsyncMock()),
         patch.object(bootstrap, "ingest_production_forecasts", AsyncMock()),
+        patch.object(production, "get_settings", return_value=test_settings),
+        patch.object(
+            production,
+            "eds_get",
+            AsyncMock(
+                return_value=[
+                    {
+                        "Minutes5UTC": datetime.now(UTC)
+                        .replace(second=0, microsecond=0)
+                        .isoformat(),
+                        "PriceArea": "DK1",
+                        "OffshoreWindPower": 10,
+                    }
+                ]
+            ),
+        ),
+        patch.object(
+            crossborder,
+            "eds_get",
+            AsyncMock(
+                return_value=[
+                    {
+                        "TimeUTC": datetime.now(UTC).replace(second=0, microsecond=0).isoformat(),
+                        "PriceArea": "DK1",
+                        **dict.fromkeys(EXCHANGE_COLUMNS["DK1"], 10),
+                    }
+                ]
+            ),
+        ),
         patch.object(bootstrap, "run_forecast", AsyncMock(side_effect=regenerate)) as forecast,
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -274,3 +343,64 @@ async def test_bootstrap_regenerates_stale_success_with_future_values(database, 
             await bootstrap.bootstrap()
             forecast.assert_awaited_once_with("DK1", issued_at=ANY, model_version="test")
             assert (await client.get("/api/health/ready")).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "table,source,fields",
+    [
+        (
+            "weather_forecasts",
+            "weather",
+            [
+                "temperature_c",
+                "wind_speed_ms",
+                "cloud_cover_pct",
+                "precipitation_mm",
+                "solar_irradiance_wm2",
+            ],
+        ),
+        ("production_forecasts", "production", ["wind_mw", "solar_mw"]),
+    ],
+)
+async def test_latest_all_null_snapshot_is_not_ready(
+    database, test_settings, table, source, fields
+):
+    await seed_fresh_sources(database, test_settings)
+    await seed_fresh_forecasts(database, test_settings.area_codes)
+    with patch.object(health, "get_settings", return_value=test_settings):
+        assert (await health.health_check()).status == "ok"
+    async with database.begin() as conn:
+        columns = ", ".join(["area", "ts", "issued_at", "source", *fields])
+        values = ", ".join(["area", "ts", "issued_at - interval '1 hour'", "source", *fields])
+        await conn.execute(text(f"INSERT INTO {table} ({columns}) SELECT {values} FROM {table}"))
+        assignments = ", ".join(f"{field} = NULL" for field in fields)
+        await conn.execute(
+            text(
+                f"UPDATE {table} SET {assignments} WHERE issued_at > NOW() - interval '30 minutes'"
+            )
+        )
+    with patch.object(health, "get_settings", return_value=test_settings):
+        body = await health.health_check()
+    assert body.status == "degraded"
+    assert {item.source for item in body.sources if item.is_stale} == {source}
+
+
+async def test_dk2_only_requires_shared_connection_but_not_dk1_external_flows(
+    database, test_settings
+):
+    test_settings._areas = {"DK2": test_settings.areas["DK2"]}
+    await seed_fresh_sources(database, test_settings)
+    await seed_fresh_forecasts(database, ["DK2"])
+    with patch.object(health, "get_settings", return_value=test_settings):
+        body = await health.health_check()
+        assert body.status == "ok"
+        sources = body.sources
+        assert not next(item for item in sources if item.source == "crossborder").is_stale
+        async with database.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM crossborder_observations WHERE connection = 'DK1-DK2'")
+            )
+        body = await health.health_check()
+        assert body.status == "degraded"
+        sources = body.sources
+        assert next(item for item in sources if item.source == "crossborder").is_stale

@@ -39,6 +39,8 @@ async def test_partial_bootstrap_preserves_ready_area_and_completes_missing_area
         patch.object(module, "backfill_crossborder", AsyncMock()),
         patch.object(module, "ingest_weather_forecasts", AsyncMock()),
         patch.object(module, "ingest_production_forecasts", AsyncMock()),
+        patch.object(module, "ingest_production_actuals", AsyncMock()),
+        patch.object(module, "ingest_crossborder_flows", AsyncMock()),
     ):
         await module.bootstrap()
     train.assert_awaited_once_with("DK2")
@@ -64,6 +66,8 @@ def recovery_mocks(test_settings):
                 "backfill_crossborder",
                 "ingest_weather_forecasts",
                 "ingest_production_forecasts",
+                "ingest_production_actuals",
+                "ingest_crossborder_flows",
                 "train_models",
                 "run_forecast",
                 "verify_price_history",
@@ -152,6 +156,8 @@ async def test_reused_models_restore_recent_prices_without_retraining(
             "DK2",
         ]
     recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
+    recovery_mocks["ingest_production_actuals"].assert_awaited_once_with()
+    recovery_mocks["ingest_crossborder_flows"].assert_awaited_once_with()
     recovery_mocks["train_models"].assert_not_awaited()
 
 

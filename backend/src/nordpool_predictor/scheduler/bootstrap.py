@@ -8,10 +8,11 @@ from sqlalchemy import text
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
 from nordpool_predictor.freshness import FORECAST_MAX_AGE
-from nordpool_predictor.ingestion.crossborder import backfill_crossborder
+from nordpool_predictor.ingestion.crossborder import backfill_crossborder, ingest_crossborder_flows
 from nordpool_predictor.ingestion.prices import backfill_prices
 from nordpool_predictor.ingestion.production import (
     backfill_production,
+    ingest_production_actuals,
     ingest_production_forecasts,
 )
 from nordpool_predictor.ingestion.weather import backfill_weather, ingest_weather_forecasts
@@ -164,6 +165,12 @@ async def bootstrap() -> None:
         )
         if shared_history_ready and history_ready:
             await attempt(f"{area} training", train_area, area)
+
+    # Existing models skip historical backfills. Refresh observation feeds too,
+    # so a restart after downtime can restore source readiness without retraining.
+    if not needs_training or not shared_history_ready:
+        await attempt("production actuals", ingest_production_actuals)
+        await attempt("crossborder flows", ingest_crossborder_flows)
 
     attempted_areas: set[str] = set()
     failed_areas: set[str] = set()
