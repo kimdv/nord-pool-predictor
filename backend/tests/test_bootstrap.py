@@ -161,6 +161,21 @@ async def test_reused_models_restore_recent_prices_without_retraining(
     recovery_mocks["train_models"].assert_not_awaited()
 
 
+async def test_ready_forecasts_still_refresh_readiness_inputs(recovery_mocks):
+    with (
+        patch.object(module, "ready_models", AsyncMock(return_value={"DK1": "v1", "DK2": "v2"})),
+        patch.object(module, "forecast_ready", AsyncMock(return_value=True)),
+    ):
+        await module.bootstrap()
+    recovery_mocks["run_forecast"].assert_not_awaited()
+    recovery_mocks["train_models"].assert_not_awaited()
+    recovery_mocks["ingest_production_forecasts"].assert_awaited_once_with()
+    assert [
+        call.kwargs["area"] for call in recovery_mocks["ingest_weather_forecasts"].await_args_list
+    ] == ["DK1", "DK2"]
+    recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
+
+
 async def test_failed_full_price_backfill_can_still_recover_existing_model(recovery_mocks):
     async def prices(*, days):
         if days != 8:

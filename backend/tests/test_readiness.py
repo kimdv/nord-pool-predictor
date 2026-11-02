@@ -156,7 +156,9 @@ async def test_ready_requires_success_for_every_area_and_completed_bootstrap(
     with patch.object(health, "get_settings", return_value=test_settings):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             # A successful DK1 run must not hide DK2's missing run.
-            assert (await client.get("/api/health/ready")).status_code == 503
+            response = await client.get("/api/health/ready")
+            assert response.status_code == 503
+            assert response.json()["last_forecast_at"] is None
             async with database.begin() as conn:
                 await conn.execute(
                     text("""
@@ -404,3 +406,64 @@ async def test_dk2_only_requires_shared_connection_but_not_dk1_external_flows(
         assert body.status == "degraded"
         sources = body.sources
         assert next(item for item in sources if item.source == "crossborder").is_stale
+
+
+@pytest.mark.parametrize(
+    "table", ["weather_forecasts", "production_forecasts", "price_observations"]
+)
+async def test_fresh_forecasts_do_not_skip_stale_source_recovery(database, test_settings, table):
+    await seed_fresh_sources(database, test_settings)
+    await seed_fresh_forecasts(database, test_settings.area_codes)
+    column = "ts" if table == "price_observations" else "issued_at"
+    async with database.begin() as conn:
+        await conn.execute(text(f"UPDATE {table} SET {column} = {column} - interval '3 days'"))
+
+    async def refresh_prices(*, days):
+        if table == "price_observations":
+            async with database.begin() as conn:
+                await conn.execute(text("UPDATE price_observations SET ts = NOW()"))
+
+    async def refresh_production():
+        if table == "production_forecasts":
+            async with database.begin() as conn:
+                await conn.execute(text("UPDATE production_forecasts SET issued_at = NOW()"))
+
+    async def refresh_weather(*, area):
+        if table == "weather_forecasts":
+            async with database.begin() as conn:
+                await conn.execute(
+                    text("""
+                    UPDATE weather_forecasts SET issued_at = NOW()
+                    WHERE area = ANY(CAST(:points AS text[]))
+                """),
+                    {"points": [point.id for point in test_settings.areas[area].weather_points]},
+                )
+
+    app = FastAPI()
+    app.include_router(health.router)
+    with (
+        patch.object(health, "get_settings", return_value=test_settings),
+        patch.object(bootstrap, "get_settings", return_value=test_settings),
+        patch.object(
+            bootstrap, "ready_models", AsyncMock(return_value={"DK1": "test", "DK2": "test"})
+        ),
+        patch.object(bootstrap, "backfill_prices", AsyncMock(side_effect=refresh_prices)),
+        patch.object(bootstrap, "ingest_production_actuals", AsyncMock()),
+        patch.object(bootstrap, "ingest_crossborder_flows", AsyncMock()),
+        patch.object(
+            bootstrap, "ingest_weather_forecasts", AsyncMock(side_effect=refresh_weather)
+        ),
+        patch.object(
+            bootstrap, "ingest_production_forecasts", AsyncMock(side_effect=refresh_production)
+        ),
+        patch.object(bootstrap, "run_forecast", AsyncMock()) as forecast,
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/health/ready")
+            assert response.status_code == 503
+            assert any(source["is_stale"] for source in response.json()["sources"])
+            assert await bootstrap.forecast_ready("DK1", "test")
+            assert await bootstrap.forecast_ready("DK2", "test")
+            await bootstrap.bootstrap()
+            forecast.assert_not_awaited()
+            assert (await client.get("/api/health/ready")).status_code == 200

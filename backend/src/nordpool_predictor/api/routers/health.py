@@ -135,8 +135,10 @@ async def health_check() -> HealthResponse:
                 {"areas": settings.area_codes, "now": now},
             )
             forecasts = forecast_result.mappings().all()
-            issued = [row["issued_at"] for row in forecasts if row["issued_at"] is not None]
-            last_forecast_at = min(issued) if issued else None
+            issued = [row["issued_at"] for row in forecasts]
+            last_forecast_at = (
+                min(issued) if issued and all(value is not None for value in issued) else None
+            )
             if not forecasts or any(
                 row["issued_at"] is None
                 or not row["has_future"]

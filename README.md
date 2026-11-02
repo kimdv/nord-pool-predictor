@@ -388,9 +388,12 @@ the dashboard starts once the app starts so it remains accessible during bootstr
 The existing `/api/health` remains a detailed dashboard status endpoint.
 Failed or running forecasts do not advance successful forecast freshness, and
 `last_forecast_at` is the oldest latest-success timestamp across configured areas.
+It is null when any configured area has no successful forecast.
 Startup recovery regenerates successful forecasts older than the same 26-hour limit
 and refreshes production observations and cross-border flows when historical backfills
 were skipped or failed.
+Weather, production forecasts, and recent prices are refreshed even when every
+area already has a fresh price forecast, without regenerating those forecasts.
 Source freshness uses observation times for each configured area's prices and production,
 and each supported cross-border connection touching a configured area, including shared
 connections when only one endpoint is configured. Weather is checked for every configured

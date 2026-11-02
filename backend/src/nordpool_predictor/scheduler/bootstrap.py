@@ -173,12 +173,14 @@ async def bootstrap() -> None:
         await attempt("crossborder flows", ingest_crossborder_flows)
 
     attempted_areas: set[str] = set()
+    refreshed_areas: set[str] = set()
     failed_areas: set[str] = set()
     while True:
         # Reconcile again after recovery: previously-ready forecasts can expire
         # while another area is fetching data or generating its forecast.
         checked_at = datetime.now(UTC)
         forecast_areas = []
+        source_areas = []
         for area in settings.area_codes:
             if area not in models or area in failed_areas:
                 continue
@@ -190,6 +192,8 @@ async def bootstrap() -> None:
                 failed_areas.add(area)
                 continue
             if ready:
+                if area not in refreshed_areas:
+                    source_areas.append(area)
                 continue
             if area in attempted_areas:
                 # Each area gets one recovery attempt. Never spin indefinitely
@@ -198,12 +202,17 @@ async def bootstrap() -> None:
                 failed_areas.add(area)
             else:
                 forecast_areas.append(area)
-        if not forecast_areas:
+        if not forecast_areas and not source_areas:
             break
 
         production_ready = await attempt("production forecasts", ingest_production_forecasts)
-        for area in forecast_areas:
-            attempted_areas.add(area)
+        # A valid price forecast can outlive the inputs required by readiness.
+        # Refresh sources once even when no new forecast needs to be generated.
+        # Recover missing forecasts first, then reconcile again after all awaits.
+        for area in [*forecast_areas, *source_areas]:
+            refreshed_areas.add(area)
+            if area in forecast_areas:
+                attempted_areas.add(area)
             weather_ready = await attempt(
                 f"{area} weather forecasts", ingest_weather_forecasts, area=area
             )
@@ -222,6 +231,8 @@ async def bootstrap() -> None:
                 price_window_fetched_until = issued_at.replace(
                     hour=0, minute=0, second=0, microsecond=0
                 ) + timedelta(days=1)
+            if area not in forecast_areas:
+                continue
             if not await attempt(
                 f"{area} price history", verify_price_history, area, issued_at=issued_at
             ):
