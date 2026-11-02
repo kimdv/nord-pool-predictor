@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -26,6 +28,11 @@ from nordpool_predictor.ml.features import (
 )
 
 logger = logging.getLogger(__name__)
+PRICE_HISTORY_DAYS = 8
+
+
+class ModelUnavailableError(ValueError):
+    """No candidate has usable model artifacts."""
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +65,27 @@ def _load_models(
     return models
 
 
+async def select_usable_model(
+    area: str, candidates: Sequence[Mapping[str, object]]
+) -> tuple[str, dict[str, object]]:
+    """Load the first usable candidate, in the caller's preference order."""
+    last_error = None
+    for candidate in candidates:
+        version = str(candidate["model_version"])
+        try:
+            models = await asyncio.to_thread(
+                _load_models, version, str(candidate["artifact_path"]), area
+            )
+        except Exception as exc:
+            logger.exception("Skipping unusable model artifacts for %s (%s)", area, version)
+            last_error = exc
+        else:
+            return version, models
+    raise ModelUnavailableError(
+        f"No usable active compatible model for area {area}"
+    ) from last_error
+
+
 def _build_forecast_features(
     area: str,
     now: datetime,
@@ -69,14 +97,15 @@ def _build_forecast_features(
     computed for the first forecast steps.  Weather and production features
     transparently fall back to forecasts for future timestamps.
     """
+    grid_anchor = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
     target_ts = pd.date_range(
-        now + timedelta(minutes=15),
+        grid_anchor + timedelta(minutes=15),
         periods=horizon_steps,
         freq="15min",
     )
 
-    history_start = now - timedelta(hours=192)
-    hist = load_prices(area, history_start, now + timedelta(minutes=15))
+    history_start = now - timedelta(days=PRICE_HISTORY_DAYS)
+    hist = load_prices(area, history_start, now)
 
     future = pd.DataFrame({TARGET: np.nan}, index=target_ts)
     future.index.name = "ts"
@@ -114,34 +143,42 @@ def _build_forecast_features(
 # ---------------------------------------------------------------------------
 
 
-async def run_forecast(area: str, horizon_steps: int = 672) -> str:
+async def run_forecast(
+    area: str,
+    horizon_steps: int = 672,
+    *,
+    issued_at: datetime | None = None,
+    model_version: str | None = None,
+) -> str:
     """Produce a price forecast for *area* and return the ``run_id``."""
     logger.info("Starting forecast for %s (horizon_steps=%d)", area, horizon_steps)
-    now = datetime.now(UTC)
-    now = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    now = issued_at if issued_at is not None else datetime.now(UTC)
 
-    # 1. Resolve the active model -------------------------------------------
+    # 1. Resolve the requested model without falling back to another version.
+    query = (
+        "SELECT model_version, artifact_path FROM model_versions "
+        "WHERE area = :area AND is_active = TRUE AND feature_set_version = 'v2-asof' "
+    )
+    params = {"area": area}
+    if model_version is not None:
+        query += "AND model_version = :model_version "
+        params["model_version"] = model_version
+    query += "ORDER BY trained_at DESC, model_version DESC"
     async with get_session() as session:
-        result = await session.execute(
-            text(
-                "SELECT model_version, artifact_path "
-                "FROM model_versions "
-                "WHERE area = :area AND is_active = TRUE "
-                "LIMIT 1"
-            ),
-            {"area": area},
-        )
-        row = result.fetchone()
+        result = await session.execute(text(query), params)
+        candidates = result.mappings().all()
 
-    if row is None:
-        raise ValueError(f"No active model for area {area}")
+    if not candidates:
+        if model_version is not None:
+            raise ValueError(
+                f"Requested model {model_version} is not active or compatible for area {area}"
+            )
+        raise ValueError(f"No active compatible model for area {area}")
 
-    model_version: str = row[0]
-    artifact_path: str = row[1]
-    logger.info("Active model for %s: %s", area, model_version)
-
-    # 2. Load quantile models ------------------------------------------------
-    models = _load_models(model_version, artifact_path, area)
+    # Pinned queries contain only the requested version. Unpinned refreshes
+    # share bootstrap's artifact-aware fallback across all compatible actives.
+    model_version, models = await select_usable_model(area, candidates)
+    logger.info("Usable active model for %s: %s", area, model_version)
 
     # 3. Create a forecast_run record ----------------------------------------
     run_id = str(uuid.uuid4())

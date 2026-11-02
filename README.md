@@ -324,3 +324,23 @@ whose `issued_at` is no later than that issuance. Historical observations are
 not substituted for future covariates. Missing historical snapshots stay missing;
 collect forecast vintages over time to improve training coverage. The migration deactivates older feature sets so the worker bootstrap retrains
 models with this contract before generating new forecasts.
+
+On each start the worker checks every configured area independently. Existing
+models are reused only when their feature set and all quantile artifacts are
+usable; missing or expired forecasts are regenerated. If training is required,
+idempotent backfills restore the full configured history rather than trusting
+another area's newest timestamp. Per-area failures are recorded as a failed
+bootstrap request, and a restart resumes the remaining areas.
+Replacement forecasts require a complete eight-day quarter-hour price history
+for their area. Bootstrap checks persisted coverage even when ingestion returns
+successfully, and missing history does not block recovery for other areas.
+Each replacement uses one issuance cutoff, captured after live covariate ingestion,
+for both price validation and prediction. Readiness is checked again after recovery
+so forecasts that expired while another area was recovering are regenerated.
+Each area gets one recovery attempt per bootstrap; remaining gaps fail the job.
+Replacement forecasts pin the model version validated by bootstrap. If that
+version is no longer active, recovery fails instead of selecting another model.
+Bootstrap and unpinned refreshes share artifact-aware selection: unusable active
+versions are skipped in favor of the newest compatible version that can load.
+Pinned forecasts never fall back. If no candidate is usable, the refresh fails
+without creating a forecast.
