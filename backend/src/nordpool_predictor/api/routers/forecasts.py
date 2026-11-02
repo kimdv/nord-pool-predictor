@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
+from pydantic import AwareDatetime
 from sqlalchemy import text
 
+from nordpool_predictor.api.pagination import decode_cursor, encode_cursor
 from nordpool_predictor.api.schemas.forecasts import (
     AccuracyMetrics,
     BenchmarkEntry,
@@ -29,13 +31,16 @@ def _validate_area(area: str) -> None:
 @router.get("/{area}", response_model=list[ForecastRunResponse])
 async def get_forecasts(
     area: str,
-    start: datetime | None = Query(None, description="Start timestamp (ISO 8601)"),
-    end: datetime | None = Query(None, description="End timestamp (ISO 8601)"),
+    response: Response,
+    limit: int = Query(14, ge=1, le=100),
+    cursor: str | None = Query(None, max_length=512),
+    start: AwareDatetime | None = Query(None, description="Start timestamp (ISO 8601)"),
+    end: AwareDatetime | None = Query(None, description="End timestamp (ISO 8601)"),
 ) -> list[ForecastRunResponse]:
     _validate_area(area)
 
     clauses = ["fr.area = :area"]
-    params: dict[str, str | datetime] = {"area": area}
+    params: dict[str, object] = {"area": area}
 
     if start is not None:
         clauses.append("fr.issued_at >= :start")
@@ -44,38 +49,57 @@ async def get_forecasts(
         clauses.append("fr.issued_at <= :end")
         params["end"] = end
 
+    if start is not None and end is not None and start > end:
+        raise HTTPException(status_code=422, detail="start must not be after end")
+    if cursor is not None:
+        timestamp, identifier = decode_cursor(cursor)
+        try:
+            identifier = UUID(identifier)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid forecast cursor") from exc
+        clauses.append("(fr.issued_at, fr.run_id) < (:cursor_time, :cursor_id)")
+        params.update(cursor_time=timestamp, cursor_id=identifier)
+    params["limit"] = limit + 1
     where = " AND ".join(clauses)
     runs_query = text(
         f"SELECT run_id, area, model_version, issued_at, status, notes "  # noqa: S608
         f"FROM forecast_runs fr WHERE {where} "
-        f"ORDER BY fr.issued_at DESC"
+        f"ORDER BY fr.issued_at DESC, fr.run_id DESC LIMIT :limit"
     )
 
     async with get_session() as session:
         runs_result = await session.execute(runs_query, params)
         runs = runs_result.mappings().all()
 
-        responses: list[ForecastRunResponse] = []
-        for run in runs:
-            vals_result = await session.execute(
+        if len(runs) > limit:
+            runs = runs[:limit]
+            response.headers["X-Next-Cursor"] = encode_cursor(
+                runs[-1]["issued_at"], runs[-1]["run_id"]
+            )
+        values_by_run: dict = {run["run_id"]: [] for run in runs}
+        if runs:
+            values_result = await session.execute(
                 text(
-                    "SELECT ts, predicted_price_dkk_kwh, lower_dkk_kwh, upper_dkk_kwh "
-                    "FROM forecast_values WHERE run_id = :run_id ORDER BY ts"
+                    "SELECT run_id, ts, predicted_price_dkk_kwh, lower_dkk_kwh, upper_dkk_kwh "
+                    "FROM forecast_values WHERE run_id = ANY(CAST(:ids AS uuid[])) "
+                    "ORDER BY run_id, ts"
                 ),
-                {"run_id": run["run_id"]},
+                {"ids": list(values_by_run)},
             )
-            values = [ForecastPoint.model_validate(v) for v in vals_result.mappings().all()]
-            responses.append(
-                ForecastRunResponse(
-                    run_id=str(run["run_id"]),
-                    area=run["area"],
-                    model_version=run["model_version"],
-                    issued_at=run["issued_at"],
-                    status=run["status"],
-                    notes=run["notes"],
-                    values=values,
-                )
+            for value in values_result.mappings().all():
+                values_by_run[value["run_id"]].append(ForecastPoint.model_validate(value))
+        responses = [
+            ForecastRunResponse(
+                run_id=str(run["run_id"]),
+                area=run["area"],
+                model_version=run["model_version"],
+                issued_at=run["issued_at"],
+                status=run["status"],
+                notes=run["notes"],
+                values=values_by_run[run["run_id"]],
             )
+            for run in runs
+        ]
 
     return responses
 

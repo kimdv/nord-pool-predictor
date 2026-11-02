@@ -17,3 +17,4 @@ class PriceResponse(BaseModel):
 
     area: str
     prices: list[PricePoint]
+    next_cursor: datetime | None = None
