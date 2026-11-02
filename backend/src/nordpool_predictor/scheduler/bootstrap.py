@@ -216,10 +216,6 @@ async def bootstrap() -> None:
             weather_ready = await attempt(
                 f"{area} weather forecasts", ingest_weather_forecasts, area=area
             )
-            if not weather_ready or not production_ready:
-                failed_areas.add(area)
-                continue
-
             # Capture issuance after live covariates arrive. Price preparation,
             # coverage validation and prediction must all use this same cutoff,
             # even if their awaits cross a quarter-hour or UTC-day boundary.
@@ -231,6 +227,10 @@ async def bootstrap() -> None:
                 price_window_fetched_until = issued_at.replace(
                     hour=0, minute=0, second=0, microsecond=0
                 ) + timedelta(days=1)
+            # Prices recover independently of weather and production availability.
+            if not weather_ready or not production_ready:
+                failed_areas.add(area)
+                continue
             if area not in forecast_areas:
                 continue
             if not await attempt(

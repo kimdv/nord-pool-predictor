@@ -411,7 +411,10 @@ async def test_dk2_only_requires_shared_connection_but_not_dk1_external_flows(
 @pytest.mark.parametrize(
     "table", ["weather_forecasts", "production_forecasts", "price_observations"]
 )
-async def test_fresh_forecasts_do_not_skip_stale_source_recovery(database, test_settings, table):
+@pytest.mark.parametrize("failed_fetch", [None, "weather", "production"])
+async def test_fresh_forecasts_do_not_skip_stale_source_recovery(
+    database, test_settings, table, failed_fetch
+):
     await seed_fresh_sources(database, test_settings)
     await seed_fresh_forecasts(database, test_settings.area_codes)
     column = "ts" if table == "price_observations" else "issued_at"
@@ -424,11 +427,15 @@ async def test_fresh_forecasts_do_not_skip_stale_source_recovery(database, test_
                 await conn.execute(text("UPDATE price_observations SET ts = NOW()"))
 
     async def refresh_production():
+        if failed_fetch == "production":
+            raise RuntimeError("production unavailable")
         if table == "production_forecasts":
             async with database.begin() as conn:
                 await conn.execute(text("UPDATE production_forecasts SET issued_at = NOW()"))
 
     async def refresh_weather(*, area):
+        if failed_fetch == "weather":
+            raise RuntimeError("weather unavailable")
         if table == "weather_forecasts":
             async with database.begin() as conn:
                 await conn.execute(
@@ -464,6 +471,17 @@ async def test_fresh_forecasts_do_not_skip_stale_source_recovery(database, test_
             assert any(source["is_stale"] for source in response.json()["sources"])
             assert await bootstrap.forecast_ready("DK1", "test")
             assert await bootstrap.forecast_ready("DK2", "test")
-            await bootstrap.bootstrap()
+            if failed_fetch:
+                with pytest.raises(RuntimeError, match="Bootstrap incomplete"):
+                    await bootstrap.bootstrap()
+            else:
+                await bootstrap.bootstrap()
             forecast.assert_not_awaited()
-            assert (await client.get("/api/health/ready")).status_code == 200
+            response = await client.get("/api/health/ready")
+            unrecovered = (table, failed_fetch) in {
+                ("weather_forecasts", "weather"),
+                ("production_forecasts", "production"),
+            }
+            assert response.status_code == (503 if unrecovered else 200)
+            sources = {source["source"]: source for source in response.json()["sources"]}
+            assert not sources["prices"]["is_stale"]

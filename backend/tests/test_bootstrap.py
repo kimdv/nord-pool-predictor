@@ -176,6 +176,47 @@ async def test_ready_forecasts_still_refresh_readiness_inputs(recovery_mocks):
     recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
 
 
+@pytest.mark.parametrize("ready_areas", [set(), {"DK1"}, {"DK1", "DK2"}])
+@pytest.mark.parametrize("weather_failures", [set(), {"DK1"}, {"DK1", "DK2"}])
+@pytest.mark.parametrize("production_fails", [False, True])
+@pytest.mark.parametrize("prices_fail", [False, True])
+async def test_input_failures_do_not_skip_independent_recovery(
+    recovery_mocks, ready_areas, weather_failures, production_fails, prices_fail
+):
+    async def ready(area, version, **kwargs):
+        return area in ready_areas or any(
+            call.args[0] == area for call in recovery_mocks["run_forecast"].await_args_list
+        )
+
+    async def weather(*, area):
+        if area in weather_failures:
+            raise RuntimeError("weather unavailable")
+
+    recovery_mocks["ingest_weather_forecasts"].side_effect = weather
+    if production_fails:
+        recovery_mocks["ingest_production_forecasts"].side_effect = RuntimeError(
+            "production unavailable"
+        )
+    if prices_fail:
+        recovery_mocks["backfill_prices"].side_effect = RuntimeError("prices unavailable")
+    with (
+        patch.object(module, "ready_models", AsyncMock(return_value={"DK1": "v1", "DK2": "v2"})),
+        patch.object(module, "forecast_ready", AsyncMock(side_effect=ready)),
+    ):
+        if weather_failures or production_fails or prices_fail:
+            with pytest.raises(RuntimeError, match="Bootstrap incomplete"):
+                await module.bootstrap()
+        else:
+            await module.bootstrap()
+
+    recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
+    assert {
+        call.kwargs["area"] for call in recovery_mocks["ingest_weather_forecasts"].await_args_list
+    } == {"DK1", "DK2"}
+    expected = set() if production_fails else {"DK1", "DK2"} - ready_areas - weather_failures
+    assert {call.args[0] for call in recovery_mocks["run_forecast"].await_args_list} == expected
+
+
 async def test_failed_full_price_backfill_can_still_recover_existing_model(recovery_mocks):
     async def prices(*, days):
         if days != 8:
