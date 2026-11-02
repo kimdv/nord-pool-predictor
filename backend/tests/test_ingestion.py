@@ -195,6 +195,7 @@ class TestProductionForecastParsing:
                 "area": "DK1",
                 "ts": datetime(2026, 5, 11, 21, 0, tzinfo=UTC),
                 "issued_at": datetime(2026, 5, 11, 20, 0, tzinfo=UTC),
+                "oldest_component_issued_at": datetime(2026, 5, 11, 20, 0, tzinfo=UTC),
                 "wind_mw": 30.0,
                 "solar_mw": 5.0,
                 "source": "energidataservice_forecast_v2",
@@ -272,12 +273,16 @@ def test_production_issuance_is_per_area_target_and_snapshot():
                 ("DK2", "2026-05-11T21:00:00", "2026-05-08T20:00:00", "Solar", 3),
                 ("DK1", "2026-05-11T22:00:00", "2026-05-08T20:00:00", "Solar", 4),
                 ("DK1", "2026-05-11T21:00:00", "2026-05-08T20:00:00", "Offshore Wind", 5),
+                ("DK1", "2026-05-11T21:00:00", "2026-05-08T20:00:00", "Solar", 9),
             ]
         ]
     )
     assert len(rows) == 4
-    assert [row["issued_at"].day for row in rows] == [11, 8, 8, 8]
-    assert rows[0]["wind_mw"] == 2
+    assert [row["issued_at"].day for row in rows] == [8, 11, 8, 8]
+    assert rows[1]["wind_mw"] == 7
+    assert rows[0]["wind_mw"] == 5
+    assert rows[1]["solar_mw"] == rows[0]["solar_mw"] == 9
+    assert rows[1]["oldest_component_issued_at"].day == 8
 
 
 @pytest.mark.parametrize("value", [None, 0])
@@ -322,7 +327,9 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
         {
             "PriceArea": area,
             "HourUTC": (target + timedelta(hours=offset)).isoformat(),
-            "TimestampUTC": (now - timedelta(days=days)).isoformat(),
+            "TimestampUTC": (
+                now - timedelta(days=days, hours=offset if area == "DK1" else 0)
+            ).isoformat(),
             "ForecastType": "Wind",
             "ForecastCurrent": 7,
         }
@@ -356,7 +363,7 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
         ).all()
     assert [row.issued_at for row in rows] == [
         now,
-        now,
+        now - timedelta(hours=1),
         now - timedelta(days=3),
         now - timedelta(days=3),
     ]
@@ -365,6 +372,39 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
     )
     assert values["wind_mw"].iloc[0] == 7
     assert _query_production_fc(sync_database, "DK2", target, target)["wind_mw"].iloc[0] == 7
+    from nordpool_predictor.api.routers import forecasts
+
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
+                feature_set_version, trained_at, artifact_path)
+            VALUES ('test', 'test', 'DK1', 'direct', 'v2-asof', NOW(), '/tmp/test')
+        """)
+        )
+        await conn.execute(
+            text("""
+            INSERT INTO forecast_runs (area, model_version, issued_at, horizon_steps, status)
+            VALUES ('DK1', 'test', :issued, 8, 'completed')
+        """),
+            {"issued": now},
+        )
+        await conn.execute(
+            text("""
+            INSERT INTO production_forecasts (area, ts, issued_at, wind_mw, source)
+            VALUES ('DK1', :legacy_target, :issued, 99, 'energidataservice_forecast'),
+                   ('DK1', :future_target, :future_issued, 99, 'test')
+        """),
+            {
+                "legacy_target": target + timedelta(hours=4),
+                "issued": now,
+                "future_target": target + timedelta(hours=3),
+                "future_issued": now + timedelta(hours=1),
+            },
+        )
+    with patch.object(forecasts, "get_settings", return_value=test_settings):
+        response = await forecasts.get_latest_forecast("DK1")
+    assert response.production_forecast_horizon == target + timedelta(hours=1)
 
 
 async def test_actual_ingestion_repairs_previously_fabricated_zeroes(database, test_settings):

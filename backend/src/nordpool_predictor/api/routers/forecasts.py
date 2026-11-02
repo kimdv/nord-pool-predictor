@@ -136,20 +136,22 @@ async def get_latest_forecast(area: str) -> ForecastRunResponse:
                 FROM (
                     SELECT MAX(ts) AS max_ts
                     FROM production_observations
-                    WHERE area = :area
+                    WHERE area = :area AND ts <= :cutoff
+                      AND (wind_mw IS NOT NULL OR solar_mw IS NOT NULL)
                     UNION ALL
                     SELECT MAX(ts) AS max_ts
-                    FROM production_forecasts
-                    WHERE area = :area
-                      AND issued_at = (
-                          SELECT MAX(issued_at)
-                          FROM production_forecasts
-                          WHERE area = :area
-                      )
+                    FROM (
+                        SELECT DISTINCT ON (ts) ts, wind_mw, solar_mw
+                        FROM production_forecasts
+                        WHERE area = :area AND issued_at <= :cutoff
+                          AND source <> 'energidataservice_forecast'
+                        ORDER BY ts, issued_at DESC
+                    ) snapshots
+                    WHERE wind_mw IS NOT NULL OR solar_mw IS NOT NULL
                 ) horizons
                 """
             ),
-            {"area": area},
+            {"area": area, "cutoff": run["issued_at"]},
         )
         prod_row = prod_horizon_result.mappings().first()
         prod_horizon = prod_row["max_ts"] if prod_row else None

@@ -44,7 +44,9 @@ _SOURCE_QUERIES: dict[str, str] = {
         FROM unnest(CAST(:owners AS text[])) AS expected(owner)
         UNION ALL
         SELECT (SELECT CASE WHEN wind_mw IS NOT NULL OR solar_mw IS NOT NULL
-                    THEN issued_at END FROM production_forecasts
+                    THEN CASE WHEN source = 'energidataservice_forecast_v2'
+                         THEN oldest_component_issued_at ELSE issued_at END END
+                FROM production_forecasts
                 WHERE area = owner AND ts = :target_hour AND issued_at <= :now
                   AND source <> 'energidataservice_forecast'
                 ORDER BY issued_at DESC LIMIT 1) AS last_updated

@@ -386,6 +386,9 @@ and are excluded from readiness and feature loading; startup refetches corrected
 snapshots under `energidataservice_forecast_v2`. Missing source timestamps are not
 replaced with fetch time. Production observations preserve missing values and genuine
 zeroes; reingestion corrects previously stored observations.
+Updates carry forward the components already known for that hour. A snapshot becomes
+available at its latest component update; readiness uses its oldest component timestamp
+so fresh wind data cannot mask stale solar data (or vice versa).
 
 `GET /api/health/live` checks process responsiveness without database queries.
 `GET /api/health/ready` returns HTTP 503 when the database fails, bootstrap is

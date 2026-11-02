@@ -63,7 +63,7 @@ def _latest_forecast_value(rec: dict[str, Any]) -> float | None:
 
 
 def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, datetime, datetime], dict[str, Any]] = {}
+    grouped: dict[tuple[str, datetime], dict[datetime, dict[str, float | None]]] = {}
     for rec in records:
         raw_ts = rec.get("HourUTC")
         area_code = rec.get("PriceArea")
@@ -73,30 +73,33 @@ def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any
         ts = datetime.fromisoformat(str(raw_ts)).replace(tzinfo=UTC)
         issued_at = datetime.fromisoformat(str(raw_issued)).replace(tzinfo=UTC)
         forecast_type = str(rec.get("ForecastType") or "").lower()
-        value = _latest_forecast_value(rec)
-        if "wind" in forecast_type:
-            field = "wind_mw"
-        elif "solar" in forecast_type:
-            field = "solar_mw"
-        else:
+        if "wind" not in forecast_type and "solar" not in forecast_type:
             continue
+        grouped.setdefault((area_code, ts), {}).setdefault(issued_at, {})[forecast_type] = (
+            _latest_forecast_value(rec)
+        )
 
-        key = (area_code, ts, issued_at)
-        row = grouped.setdefault(
-            key,
-            {
-                "area": area_code,
+    rows = []
+    for (area, ts), updates in grouped.items():
+        components: dict[str, tuple[float | None, datetime]] = {}
+        for issued_at, changes in sorted(updates.items()):
+            components.update({kind: (value, issued_at) for kind, value in changes.items()})
+            row = {
+                "area": area,
                 "ts": ts,
                 "issued_at": issued_at,
-                "wind_mw": None,
-                "solar_mw": None,
+                "oldest_component_issued_at": min(stamp for _, stamp in components.values()),
                 "source": SOURCE_FORECAST,
-            },
-        )
-        if value is not None:
-            row[field] = (row[field] or 0.0) + value
-
-    return list(grouped.values())
+            }
+            for kind, field in [("wind", "wind_mw"), ("solar", "solar_mw")]:
+                values = [
+                    value
+                    for name, (value, _) in components.items()
+                    if kind in name and value is not None
+                ]
+                row[field] = sum(values) if values else None
+            rows.append(row)
+    return rows
 
 
 async def _upsert_observations(rows: list[dict[str, Any]]) -> int:
@@ -118,9 +121,12 @@ async def _upsert_forecasts(rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
     stmt = text("""
-        INSERT INTO production_forecasts (area, issued_at, ts, wind_mw, solar_mw, source)
-        VALUES (:area, :issued_at, :ts, :wind_mw, :solar_mw, :source)
-        ON CONFLICT (area, issued_at, ts, source) DO NOTHING
+        INSERT INTO production_forecasts
+            (area, issued_at, ts, wind_mw, solar_mw, source, oldest_component_issued_at)
+        VALUES (:area, :issued_at, :ts, :wind_mw, :solar_mw, :source, :oldest_component_issued_at)
+        ON CONFLICT (area, issued_at, ts, source) DO UPDATE SET
+            wind_mw = EXCLUDED.wind_mw, solar_mw = EXCLUDED.solar_mw,
+            oldest_component_issued_at = EXCLUDED.oldest_component_issued_at
     """)
     async with get_session() as session:
         await session.execute(stmt, rows)
