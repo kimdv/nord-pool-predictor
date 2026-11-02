@@ -156,7 +156,8 @@ export default function JobStatus({
       const data = await res.json();
       if (signal?.aborted) return;
       if (data.sources) setSources(data.sources);
-      const bootstrapping = data.bootstrapping === true;
+      if (data.status === "error" || typeof data.bootstrapping !== "boolean") return;
+      const bootstrapping = data.bootstrapping;
       const finished = hasBootstrapFinished(previousBootstrapRef.current, bootstrapping);
       previousBootstrapRef.current = bootstrapping;
       if (finished) onJobsFinished?.();
