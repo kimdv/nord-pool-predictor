@@ -84,7 +84,18 @@ async def test_backfill_failure_still_recovers_area_with_usable_model(recovery_m
     with pytest.raises(RuntimeError, match="Bootstrap incomplete"):
         await module.bootstrap()
     recovery_mocks["train_models"].assert_not_awaited()
-    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1", issued_at=ANY)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(
+        "DK1", issued_at=ANY, model_version=ANY
+    )
+
+
+async def test_bootstrap_pins_validated_and_newly_trained_model_versions(recovery_mocks):
+    recovery_mocks["train_models"].return_value = "new-DK2"
+    await module.bootstrap()
+    assert {
+        call.args[0]: call.kwargs.get("model_version")
+        for call in recovery_mocks["run_forecast"].await_args_list
+    } == {"DK1": "v1", "DK2": "new-DK2"}
 
 
 async def test_area_weather_failure_does_not_block_other_area_or_training(recovery_mocks):
@@ -96,7 +107,9 @@ async def test_area_weather_failure_does_not_block_other_area_or_training(recove
     with pytest.raises(RuntimeError, match="DK2 weather forecasts"):
         await module.bootstrap()
     recovery_mocks["train_models"].assert_awaited_once_with("DK2")
-    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1", issued_at=ANY)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(
+        "DK1", issued_at=ANY, model_version=ANY
+    )
 
 
 async def test_live_production_failure_happens_after_training(recovery_mocks):
@@ -117,7 +130,9 @@ async def test_weather_backfill_is_isolated_per_training_area(recovery_mocks):
         with pytest.raises(RuntimeError, match="DK1 weather backfill"):
             await module.bootstrap()
     recovery_mocks["train_models"].assert_awaited_once_with("DK2")
-    recovery_mocks["run_forecast"].assert_awaited_once_with("DK2", issued_at=ANY)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(
+        "DK2", issued_at=ANY, model_version=ANY
+    )
 
 
 @pytest.mark.parametrize("price_failure", [False, True])
@@ -149,7 +164,9 @@ async def test_failed_full_price_backfill_can_still_recover_existing_model(recov
     with pytest.raises(RuntimeError, match="price backfill"):
         await module.bootstrap()
     recovery_mocks["train_models"].assert_not_awaited()
-    recovery_mocks["run_forecast"].assert_awaited_once_with("DK1", issued_at=ANY)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(
+        "DK1", issued_at=ANY, model_version=ANY
+    )
 
 
 @pytest.mark.parametrize("training_days,backfill_days", [(2, [2, 8]), (8, [8]), (365, [365])])
@@ -161,7 +178,7 @@ async def test_training_backfill_must_cover_prediction_window(
     assert [call.kwargs["days"] for call in recovery_mocks["backfill_prices"].await_args_list] == (
         backfill_days
     )
-    recovery_mocks["run_forecast"].assert_any_await("DK1", issued_at=ANY)
+    recovery_mocks["run_forecast"].assert_any_await("DK1", issued_at=ANY, model_version=ANY)
 
 
 @pytest.mark.parametrize("elapsed_minutes,expected_days", [(5, [365]), (20, [365, 8])])
@@ -304,7 +321,9 @@ async def test_readiness_query_failure_does_not_block_other_area_recovery(
             await module.bootstrap()
     assert sum(call.args[0] == failed_area for call in check.await_args_list) == 1
     assert any(call.args[0] == healthy_area for call in check.await_args_list)
-    recovery_mocks["run_forecast"].assert_awaited_once_with(healthy_area, issued_at=ANY)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(
+        healthy_area, issued_at=ANY, model_version=ANY
+    )
     if healthy_area not in models:
         recovery_mocks["train_models"].assert_awaited_once_with(healthy_area)
     else:
@@ -432,7 +451,9 @@ async def test_empty_backfill_only_blocks_area_without_persisted_history(
         with pytest.raises(RuntimeError, match=f"{missing_area} price history"):
             await module.bootstrap()
     recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
-    recovery_mocks["run_forecast"].assert_awaited_once_with(healthy_area, issued_at=ANY)
+    recovery_mocks["run_forecast"].assert_awaited_once_with(
+        healthy_area, issued_at=ANY, model_version=ANY
+    )
     recovery_mocks["train_models"].assert_not_awaited()
 
 

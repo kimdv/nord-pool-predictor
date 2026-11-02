@@ -206,7 +206,13 @@ async def bootstrap() -> None:
             ):
                 failed_areas.add(area)
                 continue
-            if not await attempt(f"{area} forecast", run_forecast, area, issued_at=issued_at):
+            if not await attempt(
+                f"{area} forecast",
+                run_forecast,
+                area,
+                issued_at=issued_at,
+                model_version=models[area],
+            ):
                 failed_areas.add(area)
 
     if failures:

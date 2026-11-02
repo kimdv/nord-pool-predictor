@@ -338,3 +338,5 @@ Each replacement uses one issuance cutoff, captured after live covariate ingesti
 for both price validation and prediction. Readiness is checked again after recovery
 so forecasts that expired while another area was recovering are regenerated.
 Each area gets one recovery attempt per bootstrap; remaining gaps fail the job.
+Replacement forecasts pin the model version validated by bootstrap. If that
+version is no longer active, recovery fails instead of selecting another model.

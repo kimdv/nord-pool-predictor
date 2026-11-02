@@ -117,29 +117,38 @@ def _build_forecast_features(
 
 
 async def run_forecast(
-    area: str, horizon_steps: int = 672, *, issued_at: datetime | None = None
+    area: str,
+    horizon_steps: int = 672,
+    *,
+    issued_at: datetime | None = None,
+    model_version: str | None = None,
 ) -> str:
     """Produce a price forecast for *area* and return the ``run_id``."""
     logger.info("Starting forecast for %s (horizon_steps=%d)", area, horizon_steps)
     now = issued_at if issued_at is not None else datetime.now(UTC)
 
-    # 1. Resolve the active model -------------------------------------------
+    # 1. Resolve the requested model without falling back to another version.
+    query = (
+        "SELECT model_version, artifact_path FROM model_versions "
+        "WHERE area = :area AND is_active = TRUE AND feature_set_version = 'v2-asof' "
+    )
+    params = {"area": area}
+    if model_version is not None:
+        query += "AND model_version = :model_version "
+        params["model_version"] = model_version
+    query += "ORDER BY trained_at DESC, model_version DESC LIMIT 1"
     async with get_session() as session:
-        result = await session.execute(
-            text(
-                "SELECT model_version, artifact_path "
-                "FROM model_versions "
-                "WHERE area = :area AND is_active = TRUE "
-                "LIMIT 1"
-            ),
-            {"area": area},
-        )
+        result = await session.execute(text(query), params)
         row = result.fetchone()
 
     if row is None:
-        raise ValueError(f"No active model for area {area}")
+        if model_version is not None:
+            raise ValueError(
+                f"Requested model {model_version} is not active or compatible for area {area}"
+            )
+        raise ValueError(f"No active compatible model for area {area}")
 
-    model_version: str = row[0]
+    model_version = row[0]
     artifact_path: str = row[1]
     logger.info("Active model for %s: %s", area, model_version)
 

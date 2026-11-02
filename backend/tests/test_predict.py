@@ -37,6 +37,20 @@ async def test_forecast_persists_and_uses_actual_issuance(mock_db_session, expli
     assert session.execute.call_args_list[1].args[1]["issued_at"] == issued
 
 
+async def test_unavailable_pinned_model_does_not_load_another_model_or_create_run(mock_db_session):
+    factory, session = mock_db_session
+    session.execute.return_value.fetchone.return_value = None
+    with (
+        patch.object(predict, "get_session", factory),
+        patch.object(predict, "_load_models") as load,
+    ):
+        with pytest.raises(ValueError, match="Requested model selected"):
+            await predict.run_forecast("DK1", model_version="selected")
+    session.execute.assert_awaited_once()
+    assert session.execute.await_args.args[1] == {"area": "DK1", "model_version": "selected"}
+    load.assert_not_called()
+
+
 async def test_fresh_weather_is_used_while_targets_stay_on_quarter_grid(
     sync_database, test_settings
 ):
