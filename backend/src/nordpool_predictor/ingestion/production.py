@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 ACTUALS_DATASET = "ElectricityProdex5MinRealtime"
 FORECASTS_DATASET = "Forecasts_Hour"
 SOURCE_ACTUALS = "energidataservice_actual"
-SOURCE_FORECAST = "energidataservice_forecast"
+SOURCE_FORECAST = "energidataservice_forecast_v2"
 
 ACTUAL_COLUMNS = "Minutes5UTC,Minutes5DK,OffshoreWindPower,OnshoreWindPower,SolarPower,PriceArea"
 FORECAST_COLUMNS = (
@@ -33,15 +33,15 @@ def _parse_actual_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]
         if raw_ts is None or area_code is None:
             continue
         ts = datetime.fromisoformat(str(raw_ts)).replace(tzinfo=UTC)
-        offshore = float(rec.get("OffshoreWindPower") or 0)
-        onshore = float(rec.get("OnshoreWindPower") or 0)
-        solar = float(rec.get("SolarPower") or 0)
+        wind = [rec.get("OffshoreWindPower"), rec.get("OnshoreWindPower")]
+        present_wind = [float(value) for value in wind if value is not None]
+        solar = rec.get("SolarPower")
         rows.append(
             {
                 "area": area_code,
                 "ts": ts,
-                "wind_mw": offshore + onshore,
-                "solar_mw": solar,
+                "wind_mw": sum(present_wind) if present_wind else None,
+                "solar_mw": float(solar) if solar is not None else None,
                 "source": SOURCE_ACTUALS,
             }
         )
@@ -63,17 +63,17 @@ def _latest_forecast_value(rec: dict[str, Any]) -> float | None:
 
 
 def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, datetime], dict[str, Any]] = {}
+    grouped: dict[tuple[str, datetime, datetime], dict[str, Any]] = {}
     for rec in records:
         raw_ts = rec.get("HourUTC")
         area_code = rec.get("PriceArea")
-        if raw_ts is None or area_code is None:
+        raw_issued = rec.get("TimestampUTC")
+        if raw_ts is None or area_code is None or raw_issued is None:
             continue
         ts = datetime.fromisoformat(str(raw_ts)).replace(tzinfo=UTC)
+        issued_at = datetime.fromisoformat(str(raw_issued)).replace(tzinfo=UTC)
         forecast_type = str(rec.get("ForecastType") or "").lower()
         value = _latest_forecast_value(rec)
-        if value is None:
-            continue
         if "wind" in forecast_type:
             field = "wind_mw"
         elif "solar" in forecast_type:
@@ -81,30 +81,22 @@ def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any
         else:
             continue
 
-        key = (area_code, ts)
+        key = (area_code, ts, issued_at)
         row = grouped.setdefault(
             key,
             {
                 "area": area_code,
                 "ts": ts,
+                "issued_at": issued_at,
                 "wind_mw": None,
                 "solar_mw": None,
                 "source": SOURCE_FORECAST,
             },
         )
-        row[field] = (row[field] or 0.0) + value
+        if value is not None:
+            row[field] = (row[field] or 0.0) + value
 
     return list(grouped.values())
-
-
-def _source_issued_at(records: list[dict[str, Any]], fallback: datetime) -> datetime:
-    timestamps = []
-    for rec in records:
-        raw_ts = rec.get("TimestampUTC")
-        if raw_ts is None:
-            continue
-        timestamps.append(datetime.fromisoformat(str(raw_ts)).replace(tzinfo=UTC))
-    return max(timestamps) if timestamps else fallback
 
 
 async def _upsert_observations(rows: list[dict[str, Any]]) -> int:
@@ -113,7 +105,8 @@ async def _upsert_observations(rows: list[dict[str, Any]]) -> int:
     stmt = text("""
         INSERT INTO production_observations (area, ts, wind_mw, solar_mw, source)
         VALUES (:area, :ts, :wind_mw, :solar_mw, :source)
-        ON CONFLICT (area, ts, source) DO NOTHING
+        ON CONFLICT (area, ts, source) DO UPDATE
+        SET wind_mw = EXCLUDED.wind_mw, solar_mw = EXCLUDED.solar_mw
     """)
     async with get_session() as session:
         await session.execute(stmt, rows)
@@ -121,12 +114,9 @@ async def _upsert_observations(rows: list[dict[str, Any]]) -> int:
     return len(rows)
 
 
-async def _upsert_forecasts(rows: list[dict[str, Any]], issued_at: datetime) -> int:
+async def _upsert_forecasts(rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
-    for r in rows:
-        r["issued_at"] = issued_at
-
     stmt = text("""
         INSERT INTO production_forecasts (area, issued_at, ts, wind_mw, solar_mw, source)
         VALUES (:area, :issued_at, :ts, :wind_mw, :solar_mw, :source)
@@ -173,7 +163,6 @@ async def ingest_production_forecasts() -> None:
     settings = get_settings()
     areas = settings.area_codes
     now = datetime.now(UTC)
-    issued_at = now.replace(second=0, microsecond=0)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = today + timedelta(days=2)
 
@@ -195,9 +184,8 @@ async def ingest_production_forecasts() -> None:
         logger.warning("No production forecast records returned")
         return
 
-    issued_at = _source_issued_at(records, issued_at)
     rows = _parse_forecast_records(records)
-    count = await _upsert_forecasts(rows, issued_at)
+    count = await _upsert_forecasts(rows)
     logger.info("Production forecast ingestion complete: %d rows", count)
 
 

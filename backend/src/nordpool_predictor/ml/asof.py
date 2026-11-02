@@ -87,6 +87,7 @@ def load_asof_covariates(
             WHERE f.{owner} = o.id
               AND f.ts = date_trunc('hour', t.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
               AND f.issued_at <= t.issued_at
+              {"AND f.source <> 'energidataservice_forecast'" if kind == "production" else ""}
             ORDER BY f.issued_at DESC LIMIT 1
         ) snapshot ON TRUE
         GROUP BY t.ts ORDER BY t.ts

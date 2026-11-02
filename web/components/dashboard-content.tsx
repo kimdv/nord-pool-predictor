@@ -34,9 +34,11 @@ interface AreaData {
 export default function DashboardContent({
   areaData,
   sources,
+  bootstrapping,
 }: {
   areaData: AreaData[];
   sources: SourceStatus[];
+  bootstrapping: boolean;
 }) {
   const router = useRouter();
   const { selected, select } = useSelectedArea();
@@ -137,6 +139,7 @@ export default function DashboardContent({
 
       <JobStatus
         sources={sources}
+        bootstrapping={bootstrapping}
         forecast={forecast}
         onJobsFinished={refreshDashboard}
       />

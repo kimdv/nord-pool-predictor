@@ -1,5 +1,9 @@
 import type { JobSummary } from "./api";
 
+export function hasBootstrapFinished(previous: boolean | null, current: boolean): boolean {
+  return previous === true && !current;
+}
+
 export function hasNewlyFinishedJobs(
   previous: Record<string, JobSummary> | null,
   current: Record<string, JobSummary>,

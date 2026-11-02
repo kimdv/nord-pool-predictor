@@ -176,6 +176,29 @@ async def test_ready_forecasts_still_refresh_readiness_inputs(recovery_mocks):
     recovery_mocks["backfill_prices"].assert_awaited_once_with(days=8)
 
 
+@pytest.mark.parametrize("models", [{}, {"DK1": "v1"}])
+@pytest.mark.parametrize("history_fails", [False, True])
+async def test_failed_training_does_not_skip_live_sources(recovery_mocks, models, history_fails):
+    recovery_mocks["train_models"].side_effect = RuntimeError("training failed")
+    if history_fails:
+        recovery_mocks["backfill_prices"].side_effect = RuntimeError("historical prices failed")
+    with (
+        patch.object(module, "ready_models", AsyncMock(return_value=models)),
+        patch.object(module, "forecast_ready", AsyncMock(return_value=True)),
+        pytest.raises(RuntimeError, match="Bootstrap incomplete"),
+    ):
+        await module.bootstrap()
+    assert {
+        call.kwargs["area"] for call in recovery_mocks["ingest_weather_forecasts"].await_args_list
+    } == {"DK1", "DK2"}
+    recovery_mocks["ingest_production_forecasts"].assert_awaited_once_with()
+    assert [call.kwargs["days"] for call in recovery_mocks["backfill_prices"].await_args_list] == (
+        [365, 8] if history_fails else [365]
+    )
+    assert recovery_mocks["train_models"].await_count == (0 if history_fails else 2 - len(models))
+    recovery_mocks["run_forecast"].assert_not_awaited()
+
+
 @pytest.mark.parametrize("ready_areas", [set(), {"DK1"}, {"DK1", "DK2"}])
 @pytest.mark.parametrize("weather_failures", [set(), {"DK1"}, {"DK1", "DK2"}])
 @pytest.mark.parametrize("production_fails", [False, True])

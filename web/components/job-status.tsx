@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JobSummary, SourceStatus, ForecastResponse } from "@/lib/api";
-import { hasNewlyFinishedJobs } from "@/lib/job-updates";
+import { hasNewlyFinishedJobs, hasBootstrapFinished } from "@/lib/job-updates";
 import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
 function formatDate(dateStr: string | null): string {
@@ -124,10 +124,12 @@ function RefreshButton({
 
 export default function JobStatus({
   sources: initialSources,
+  bootstrapping,
   forecast,
   onJobsFinished,
 }: {
   sources: SourceStatus[];
+  bootstrapping: boolean;
   forecast?: ForecastResponse | null;
   onJobsFinished?: () => void;
 }) {
@@ -138,6 +140,7 @@ export default function JobStatus({
   const [summaries, setSummaries] = useState<Record<string, JobSummary>>({});
 
   const previousSummariesRef = useRef<Record<string, JobSummary> | null>(null);
+  const previousBootstrapRef = useRef<boolean | null>(bootstrapping);
   const mountedRef = useRef(false);
   const feedbackTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const fetchAbortRef = useRef<AbortController | null>(null);
@@ -153,12 +156,16 @@ export default function JobStatus({
       const data = await res.json();
       if (signal?.aborted) return;
       if (data.sources) setSources(data.sources);
+      const bootstrapping = data.bootstrapping === true;
+      const finished = hasBootstrapFinished(previousBootstrapRef.current, bootstrapping);
+      previousBootstrapRef.current = bootstrapping;
+      if (finished) onJobsFinished?.();
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         console.warn("Failed to refresh sources", err);
       }
     }
-  }, []);
+  }, [onJobsFinished]);
 
   const refreshSummaries = useCallback(async (signal?: AbortSignal) => {
     try {

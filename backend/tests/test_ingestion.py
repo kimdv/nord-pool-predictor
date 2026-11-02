@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from nordpool_predictor.ingestion.prices import _parse_rows
-from nordpool_predictor.ingestion.production import _parse_forecast_records, _source_issued_at
+from nordpool_predictor.ingestion.production import (
+    _parse_actual_records,
+    _parse_forecast_records,
+)
 from nordpool_predictor.ingestion.weather import _parse_hourly
 
 
@@ -183,15 +186,18 @@ class TestProductionForecastParsing:
             },
         ]
 
+        for rec in records:
+            rec["TimestampUTC"] = "2026-05-11T20:00:00"
         rows = _parse_forecast_records(records)
 
         assert rows == [
             {
                 "area": "DK1",
                 "ts": datetime(2026, 5, 11, 21, 0, tzinfo=UTC),
+                "issued_at": datetime(2026, 5, 11, 20, 0, tzinfo=UTC),
                 "wind_mw": 30.0,
                 "solar_mw": 5.0,
-                "source": "energidataservice_forecast",
+                "source": "energidataservice_forecast_v2",
             }
         ]
 
@@ -203,6 +209,7 @@ class TestProductionForecastParsing:
                 "ForecastType": "Solar",
                 "ForecastCurrent": None,
                 "ForecastDayAhead": 7.5,
+                "TimestampUTC": "2026-05-11T20:00:00",
             }
         ]
 
@@ -211,16 +218,190 @@ class TestProductionForecastParsing:
         assert rows[0]["wind_mw"] is None
         assert rows[0]["solar_mw"] == 7.5
 
-    def test_source_issued_at_uses_latest_energinet_timestamp(self):
-        fallback = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
-        records = [
-            {"TimestampUTC": "2026-05-10T15:45:00"},
-            {"TimestampUTC": "2026-05-10T15:50:00"},
+    def test_missing_issuance_is_not_invented(self):
+        assert (
+            _parse_forecast_records(
+                [
+                    {
+                        "HourUTC": "2026-05-11T21:00:00",
+                        "PriceArea": "DK1",
+                        "ForecastType": "Solar",
+                        "ForecastCurrent": 1,
+                    }
+                ]
+            )
+            == []
+        )
+
+
+@pytest.mark.parametrize(
+    "values,wind,solar",
+    [
+        ({}, None, None),
+        ({"OffshoreWindPower": 0, "OnshoreWindPower": 0, "SolarPower": 0}, 0, 0),
+        ({"OffshoreWindPower": 3}, 3, None),
+        ({"OffshoreWindPower": 3, "OnshoreWindPower": 4, "SolarPower": 2}, 7, 2),
+    ],
+)
+def test_production_actuals_preserve_missing_values_and_zeroes(values, wind, solar):
+    row = _parse_actual_records(
+        [
+            {
+                "Minutes5UTC": "2026-05-11T21:00:00",
+                "PriceArea": "DK1",
+                **values,
+            }
         ]
+    )[0]
+    assert row["wind_mw"] == wind
+    assert row["solar_mw"] == solar
 
-        issued_at = _source_issued_at(records, fallback)
 
-        assert issued_at == datetime(2026, 5, 10, 15, 50, tzinfo=UTC)
+def test_production_issuance_is_per_area_target_and_snapshot():
+    rows = _parse_forecast_records(
+        [
+            {
+                "HourUTC": target,
+                "PriceArea": area,
+                "TimestampUTC": issued,
+                "ForecastType": kind,
+                "ForecastCurrent": value,
+            }
+            for area, target, issued, kind, value in [
+                ("DK1", "2026-05-11T21:00:00", "2026-05-11T20:00:00", "Onshore Wind", 2),
+                ("DK2", "2026-05-11T21:00:00", "2026-05-08T20:00:00", "Solar", 3),
+                ("DK1", "2026-05-11T22:00:00", "2026-05-08T20:00:00", "Solar", 4),
+                ("DK1", "2026-05-11T21:00:00", "2026-05-08T20:00:00", "Offshore Wind", 5),
+            ]
+        ]
+    )
+    assert len(rows) == 4
+    assert [row["issued_at"].day for row in rows] == [11, 8, 8, 8]
+    assert rows[0]["wind_mw"] == 2
+
+
+@pytest.mark.parametrize("value", [None, 0])
+def test_empty_forecast_snapshot_is_preserved_without_inventing_zero(value):
+    row = _parse_forecast_records(
+        [
+            {
+                "HourUTC": "2026-05-11T21:00:00",
+                "PriceArea": "DK1",
+                "TimestampUTC": "2026-05-11T20:00:00",
+                "ForecastType": "Solar",
+                "ForecastCurrent": value,
+            }
+        ]
+    )[0]
+    assert row["solar_mw"] == value
+    assert row["wind_mw"] is None
+
+
+async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
+    database, sync_database, test_settings
+):
+    import pandas as pd
+    from sqlalchemy import text
+
+    from nordpool_predictor.api.routers import health
+    from nordpool_predictor.ingestion import production
+    from nordpool_predictor.ml.asof import load_asof_covariates
+    from nordpool_predictor.ml.features import _query_production_fc
+
+    now = datetime.now(UTC)
+    target = now.replace(minute=0, second=0, microsecond=0)
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO production_forecasts (area, ts, issued_at, wind_mw, source)
+            VALUES ('DK2', :ts, :issued, 99, 'energidataservice_forecast')
+        """),
+            {"ts": target, "issued": now},
+        )
+    records = [
+        {
+            "PriceArea": area,
+            "HourUTC": (target + timedelta(hours=offset)).isoformat(),
+            "TimestampUTC": (now - timedelta(days=days)).isoformat(),
+            "ForecastType": "Wind",
+            "ForecastCurrent": 7,
+        }
+        for area, days in [("DK1", 0), ("DK2", 3)]
+        for offset in [0, 1]
+    ]
+    with (
+        patch.object(production, "get_settings", return_value=test_settings),
+        patch.object(production, "eds_get", AsyncMock(return_value=records)),
+    ):
+        await production.ingest_production_forecasts()
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO production_observations (area, ts, wind_mw, source)
+            VALUES ('DK1', :ts, 1, 'test'), ('DK2', :ts, 1, 'test')
+        """),
+            {"ts": now},
+        )
+    with patch.object(health, "get_settings", return_value=test_settings):
+        report = await health.health_check()
+    assert next(source for source in report.sources if source.source == "production").is_stale
+    async with database.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("""
+            SELECT area, issued_at FROM production_forecasts
+            WHERE source = 'energidataservice_forecast_v2' ORDER BY area, ts
+        """)
+            )
+        ).all()
+    assert [row.issued_at for row in rows] == [
+        now,
+        now,
+        now - timedelta(days=3),
+        now - timedelta(days=3),
+    ]
+    values = load_asof_covariates(
+        sync_database, pd.DataFrame(index=pd.DatetimeIndex([target])), "DK2", now, "production"
+    )
+    assert values["wind_mw"].iloc[0] == 7
+    assert _query_production_fc(sync_database, "DK2", target, target)["wind_mw"].iloc[0] == 7
+
+
+async def test_actual_ingestion_repairs_previously_fabricated_zeroes(database, test_settings):
+    from sqlalchemy import text
+
+    from nordpool_predictor.ingestion import production
+
+    now = datetime.now(UTC)
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO production_observations (area, ts, wind_mw, solar_mw, source)
+            VALUES ('DK1', :ts, 0, 0, 'energidataservice_actual')
+        """),
+            {"ts": now},
+        )
+    with (
+        patch.object(production, "get_settings", return_value=test_settings),
+        patch.object(
+            production,
+            "eds_get",
+            AsyncMock(
+                return_value=[
+                    {
+                        "Minutes5UTC": now.isoformat(),
+                        "PriceArea": "DK1",
+                    }
+                ]
+            ),
+        ),
+    ):
+        await production.ingest_production_actuals()
+    async with database.connect() as conn:
+        row = (
+            await conn.execute(text("SELECT wind_mw, solar_mw FROM production_observations"))
+        ).one()
+    assert tuple(row) == (None, None)
 
 
 # ---------------------------------------------------------------------------

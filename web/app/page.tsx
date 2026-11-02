@@ -31,5 +31,5 @@ export default async function DashboardPage() {
     }),
   );
 
-  return <DashboardContent areaData={areaData} sources={health.sources} />;
+  return <DashboardContent areaData={areaData} sources={health.sources} bootstrapping={health.bootstrapping ?? false} />;
 }

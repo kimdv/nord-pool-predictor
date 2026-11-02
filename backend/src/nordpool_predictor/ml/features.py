@@ -371,7 +371,8 @@ def _query_production_fc(
     query = text(
         "SELECT DISTINCT ON (ts) ts, wind_mw, solar_mw "
         "FROM production_forecasts "
-        "WHERE area = :area AND ts >= :ts_min AND ts <= :ts_max "
+        "WHERE source <> 'energidataservice_forecast' "
+        "AND area = :area AND ts >= :ts_min AND ts <= :ts_max "
         "ORDER BY ts, issued_at DESC"
     )
     with engine.connect() as conn:

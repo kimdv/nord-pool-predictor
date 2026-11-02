@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasNewlyFinishedJobs } from "../lib/job-updates.ts";
+import { hasNewlyFinishedJobs, hasBootstrapFinished } from "../lib/job-updates.ts";
+
+for (const previous of [null, false, true]) {
+  for (const current of [false, true]) {
+    test(`bootstrap transition ${previous} -> ${current}`, () => {
+      assert.equal(hasBootstrapFinished(previous, current), previous === true && !current);
+    });
+  }
+}
 
 function job(overrides = {}) {
   return {

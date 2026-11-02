@@ -182,7 +182,11 @@ async def bootstrap() -> None:
         forecast_areas = []
         source_areas = []
         for area in settings.area_codes:
-            if area not in models or area in failed_areas:
+            if area in failed_areas:
+                continue
+            if area not in models:
+                if area not in refreshed_areas:
+                    source_areas.append(area)
                 continue
             try:
                 ready = await forecast_ready(area, models[area], as_of=checked_at)

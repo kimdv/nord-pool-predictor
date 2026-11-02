@@ -380,6 +380,13 @@ loading/prediction run outside the API event loop.
 
 ### Health probes
 
+Production forecast snapshots retain issuance timestamps per area, target hour, and
+source snapshot. Legacy `energidataservice_forecast` rows used response-wide stamps
+and are excluded from readiness and feature loading; startup refetches corrected
+snapshots under `energidataservice_forecast_v2`. Missing source timestamps are not
+replaced with fetch time. Production observations preserve missing values and genuine
+zeroes; reingestion corrects previously stored observations.
+
 `GET /api/health/live` checks process responsiveness without database queries.
 `GET /api/health/ready` returns HTTP 503 when the database fails, bootstrap is
 pending/running, source data is stale, or any configured area lacks a recent
