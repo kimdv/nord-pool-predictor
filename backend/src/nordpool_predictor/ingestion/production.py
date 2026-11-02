@@ -88,7 +88,10 @@ def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any
                 "area": area,
                 "ts": ts,
                 "issued_at": issued_at,
-                "oldest_component_issued_at": min(stamp for _, stamp in components.values()),
+                "oldest_component_issued_at": min(
+                    (stamp for value, stamp in components.values() if value is not None),
+                    default=issued_at,
+                ),
                 "source": SOURCE_FORECAST,
             }
             for kind, field in [("wind", "wind_mw"), ("solar", "solar_mw")]:
@@ -127,6 +130,7 @@ async def _upsert_forecasts(rows: list[dict[str, Any]]) -> int:
         ON CONFLICT (area, issued_at, ts, source) DO UPDATE SET
             wind_mw = EXCLUDED.wind_mw, solar_mw = EXCLUDED.solar_mw,
             oldest_component_issued_at = EXCLUDED.oldest_component_issued_at
+        WHERE production_forecasts.oldest_component_issued_at IS NULL
     """)
     async with get_session() as session:
         await session.execute(stmt, rows)

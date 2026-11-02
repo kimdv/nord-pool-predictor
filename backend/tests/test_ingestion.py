@@ -302,6 +302,68 @@ def test_empty_forecast_snapshot_is_preserved_without_inventing_zero(value):
     assert row["wind_mw"] is None
 
 
+def test_missing_optional_component_does_not_age_usable_forecast():
+    rows = _parse_forecast_records(
+        [
+            {
+                "HourUTC": "2026-05-11T21:00:00",
+                "PriceArea": "DK1",
+                "TimestampUTC": stamp,
+                "ForecastType": kind,
+                "ForecastCurrent": value,
+            }
+            for stamp, kind, value in [
+                ("2026-05-08T20:00:00", "Solar", None),
+                ("2026-05-11T20:00:00", "Wind", 7),
+            ]
+        ]
+    )
+    assert rows[-1]["oldest_component_issued_at"] == datetime(2026, 5, 11, 20, tzinfo=UTC)
+
+
+async def test_repeated_ingestion_keeps_historical_snapshots(database, test_settings):
+    from sqlalchemy import text
+
+    from nordpool_predictor.ingestion import production
+
+    target = datetime(2026, 5, 11, 21, tzinfo=UTC)
+
+    def record(kind, hour, value):
+        return {
+            "HourUTC": target.isoformat(),
+            "PriceArea": "DK1",
+            "TimestampUTC": target.replace(hour=hour).isoformat(),
+            "ForecastType": kind,
+            "ForecastCurrent": value,
+        }
+
+    first = [record("Solar", 19, 9), record("Offshore Wind", 20, 5), record("Onshore Wind", 20, 2)]
+    second = [
+        record("Solar", 19, 9),
+        record("Offshore Wind", 20, 5),
+        record("Onshore Wind", 21, 3),
+    ]
+    with (
+        patch.object(production, "get_settings", return_value=test_settings),
+        patch.object(production, "eds_get", AsyncMock(side_effect=[first, second])),
+    ):
+        await production.ingest_production_forecasts()
+        await production.ingest_production_forecasts()
+    async with database.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("""
+            SELECT issued_at, wind_mw, solar_mw FROM production_forecasts ORDER BY issued_at
+        """)
+            )
+        ).all()
+    assert [(row.issued_at.hour, row.wind_mw, row.solar_mw) for row in rows] == [
+        (19, None, 9),
+        (20, 7, 9),
+        (21, 8, 9),
+    ]
+
+
 async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
     database, sync_database, test_settings
 ):
