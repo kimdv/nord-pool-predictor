@@ -9,6 +9,8 @@ from sqlalchemy import text
 from nordpool_predictor.api.schemas.health import HealthResponse, SourceFreshness
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
+from nordpool_predictor.freshness import FORECAST_MAX_AGE
+from nordpool_predictor.ingestion.crossborder import EXCHANGE_COLUMNS
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/health", tags=["health"])
@@ -21,10 +23,30 @@ _STALENESS_THRESHOLDS: dict[str, timedelta] = {
 }
 
 _SOURCE_QUERIES: dict[str, str] = {
-    "prices": "SELECT MAX(created_at) AS last_updated FROM price_observations",
-    "weather": "SELECT MAX(created_at) AS last_updated FROM weather_forecasts",
-    "production": "SELECT MAX(created_at) AS last_updated FROM production_observations",
-    "crossborder": "SELECT MAX(created_at) AS last_updated FROM crossborder_observations",
+    "prices": """
+        SELECT (SELECT MAX(ts) FROM price_observations
+                WHERE area = owner AND ts <= :now) AS last_updated
+        FROM unnest(CAST(:owners AS text[])) AS expected(owner)
+    """,
+    "weather": """
+        SELECT (SELECT MAX(issued_at) FROM weather_forecasts
+                WHERE area = owner AND ts = :target_hour AND issued_at <= :now) AS last_updated
+        FROM unnest(CAST(:owners AS text[])) AS expected(owner)
+    """,
+    "production": """
+        SELECT (SELECT MAX(ts) FROM production_observations
+                WHERE area = owner AND ts <= :now) AS last_updated
+        FROM unnest(CAST(:owners AS text[])) AS expected(owner)
+        UNION ALL
+        SELECT (SELECT MAX(issued_at) FROM production_forecasts
+                WHERE area = owner AND ts = :target_hour AND issued_at <= :now) AS last_updated
+        FROM unnest(CAST(:owners AS text[])) AS expected(owner)
+    """,
+    "crossborder": """
+        SELECT (SELECT MAX(ts) FROM crossborder_observations
+                WHERE connection = owner AND ts <= :now) AS last_updated
+        FROM unnest(CAST(:owners AS text[])) AS expected(owner)
+    """,
 }
 
 
@@ -33,6 +55,20 @@ async def health_check() -> HealthResponse:
     sources: list[SourceFreshness] = []
     degraded = False
     now = datetime.now(UTC)
+    settings = get_settings()
+    owners = {
+        "prices": settings.area_codes,
+        "weather": [point.id for area in settings.areas.values() for point in area.weather_points],
+        "production": settings.area_codes,
+        "crossborder": [
+            connection
+            for area in settings.area_codes
+            for connection in EXCHANGE_COLUMNS.get(area, {}).values()
+        ],
+    }
+    # Prediction selects hourly snapshots for its first quarter-hour target.
+    next_target = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    target_hour = (next_target + timedelta(minutes=15)).replace(minute=0)
     bootstrapping = False
 
     try:
@@ -46,9 +82,18 @@ async def health_check() -> HealthResponse:
             bootstrapping = bool(bootstrap_result.scalar())
 
             for source_name, query in _SOURCE_QUERIES.items():
-                result = await session.execute(text(query))
-                row = result.mappings().first()
-                last_updated = row["last_updated"] if row else None
+                if not owners[source_name]:
+                    continue  # No applicable inputs configured for this source.
+                result = await session.execute(
+                    text(query),
+                    {"owners": owners[source_name], "now": now, "target_hour": target_hour},
+                )
+                timestamps = [row["last_updated"] for row in result.mappings().all()]
+                last_updated = (
+                    min(timestamps)
+                    if timestamps and all(ts is not None for ts in timestamps)
+                    else None
+                )
 
                 threshold = _STALENESS_THRESHOLDS[source_name]
                 is_stale = last_updated is None or (now - last_updated) > threshold
@@ -66,7 +111,7 @@ async def health_check() -> HealthResponse:
             forecast_result = await session.execute(
                 text("""
                 SELECT a.area, fr.issued_at, EXISTS (
-                    SELECT 1 FROM forecast_values fv WHERE fv.run_id = fr.run_id AND fv.ts > NOW()
+                    SELECT 1 FROM forecast_values fv WHERE fv.run_id = fr.run_id AND fv.ts > :now
                 ) AS has_future
                 FROM unnest(CAST(:areas AS text[])) AS a(area)
                 LEFT JOIN LATERAL (
@@ -75,7 +120,7 @@ async def health_check() -> HealthResponse:
                     ORDER BY issued_at DESC LIMIT 1
                 ) fr ON TRUE
             """),
-                {"areas": get_settings().area_codes},
+                {"areas": settings.area_codes, "now": now},
             )
             forecasts = forecast_result.mappings().all()
             issued = [row["issued_at"] for row in forecasts if row["issued_at"] is not None]
@@ -83,7 +128,7 @@ async def health_check() -> HealthResponse:
             if not forecasts or any(
                 row["issued_at"] is None
                 or not row["has_future"]
-                or now - row["issued_at"] > timedelta(hours=26)
+                or not timedelta(0) <= now - row["issued_at"] <= FORECAST_MAX_AGE
                 for row in forecasts
             ):
                 degraded = True

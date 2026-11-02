@@ -233,7 +233,7 @@ services:
     restart: always
     depends_on:
       nordpool-app:
-        condition: service_healthy
+        condition: service_started
     environment:
       - API_BASE_URL=http://nordpool-app:8000
     ports:
@@ -383,7 +383,15 @@ loading/prediction run outside the API event loop.
 `GET /api/health/live` checks process responsiveness without database queries.
 `GET /api/health/ready` returns HTTP 503 when the database fails, bootstrap is
 pending/running, source data is stale, or any configured area lacks a recent
-successful forecast with future values. Docker uses readiness for dependency
-health. The existing `/api/health` remains a detailed dashboard status endpoint.
+successful forecast with future values. Docker uses readiness for app health;
+the dashboard starts once the app starts so it remains accessible during bootstrap.
+The existing `/api/health` remains a detailed dashboard status endpoint.
 Failed or running forecasts do not advance successful forecast freshness, and
 `last_forecast_at` is the oldest latest-success timestamp across configured areas.
+Startup recovery regenerates successful forecasts older than the same 26-hour limit.
+Source freshness uses observation times for each configured area's prices and production,
+and each supported cross-border connection. Weather is checked for every configured
+weather point. Weather and production forecasts must have an issuance within 26 hours,
+available now, covering the hourly bucket of the next quarter-hour prediction target.
+Each source reports its oldest required input timestamp, or no timestamp if an input
+is missing. Existing owner/timestamp indexes support these checks without new index builds.

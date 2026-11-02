@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
+from nordpool_predictor.freshness import FORECAST_MAX_AGE
 from nordpool_predictor.ingestion.crossborder import backfill_crossborder
 from nordpool_predictor.ingestion.prices import backfill_prices
 from nordpool_predictor.ingestion.production import (
@@ -55,21 +56,31 @@ async def ready_models() -> dict[str, str]:
 
 
 async def forecast_ready(area: str, model_version: str, *, as_of: datetime | None = None) -> bool:
+    now = as_of if as_of is not None else datetime.now(UTC)
     async with get_session() as session:
         return bool(
             (
                 await session.execute(
                     text("""
             SELECT EXISTS (
-                SELECT 1 FROM forecast_runs fr JOIN forecast_values fv USING (run_id)
-                WHERE fr.area = :area AND fr.model_version = :version
-                  AND fr.status IN ('completed', 'scored') AND fv.ts > :as_of
+                SELECT 1 FROM (
+                    SELECT run_id, issued_at FROM forecast_runs
+                    WHERE area = :area AND model_version = :version
+                      AND status IN ('completed', 'scored')
+                    ORDER BY issued_at DESC LIMIT 1
+                ) fr
+                WHERE fr.issued_at BETWEEN :fresh_since AND :as_of
+                  AND EXISTS (
+                    SELECT 1 FROM forecast_values fv
+                    WHERE fv.run_id = fr.run_id AND fv.ts > :as_of
+                  )
             )
         """),
                     {
                         "area": area,
                         "version": model_version,
-                        "as_of": as_of if as_of is not None else datetime.now(UTC),
+                        "as_of": now,
+                        "fresh_since": now - FORECAST_MAX_AGE,
                     },
                 )
             ).scalar()

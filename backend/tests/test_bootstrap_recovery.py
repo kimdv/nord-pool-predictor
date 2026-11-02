@@ -41,7 +41,7 @@ async def test_midnight_recovery_uses_validated_inputs_and_repairs_expired_forec
                             (area, model_version, issued_at, horizon_steps, status)
                         VALUES ('DK1', 'v1', :issued, 672, 'completed') RETURNING run_id
                     """),
-                    {"issued": after.replace(minute=0) - timedelta(days=7)},
+                    {"issued": before - timedelta(hours=1)},
                 )
             ).scalar_one()
             await conn.execute(

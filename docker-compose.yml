@@ -85,7 +85,7 @@ services:
     restart: always
     depends_on:
       app:
-        condition: service_healthy
+        condition: service_started
     environment:
       API_BASE_URL: http://app:8000
     ports:
