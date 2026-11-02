@@ -344,18 +344,21 @@ async def test_ready_models_reject_missing_artifacts(database):
 
 
 @pytest.mark.parametrize(
-    "status,model_version,future,expected",
+    "status,model_version,future,age,expected",
     [
-        ("completed", "v1", True, True),
-        ("scored", "v1", True, True),
-        ("completed", "v1", False, False),
-        ("completed", "v2", True, False),
-        ("failed", "v1", True, False),
-        ("running", "v1", True, False),
+        ("completed", "v1", True, timedelta(0), True),
+        ("scored", "v1", True, timedelta(0), True),
+        ("completed", "v1", False, timedelta(0), False),
+        ("completed", "v2", True, timedelta(0), False),
+        ("failed", "v1", True, timedelta(0), False),
+        ("running", "v1", True, timedelta(0), False),
+        ("completed", "v1", True, timedelta(hours=26), True),
+        ("completed", "v1", True, timedelta(hours=26, microseconds=1), False),
+        ("completed", "v1", True, timedelta(hours=-1), False),
     ],
 )
 async def test_forecast_readiness_uses_matching_successful_unexpired_values(
-    database, status, model_version, future, expected
+    database, status, model_version, future, age, expected
 ):
     now = datetime.now(UTC)
     async with database.begin() as conn:
@@ -373,7 +376,7 @@ async def test_forecast_readiness_uses_matching_successful_unexpired_values(
             INSERT INTO forecast_runs (area, model_version, issued_at, horizon_steps, status)
             VALUES ('DK1', :version, :issued, 1, :status) RETURNING run_id
         """),
-                {"version": model_version, "issued": now, "status": status},
+                {"version": model_version, "issued": now - age, "status": status},
             )
         ).scalar_one()
         await conn.execute(
@@ -383,8 +386,8 @@ async def test_forecast_readiness_uses_matching_successful_unexpired_values(
         """),
             {"id": run_id, "ts": now + timedelta(days=1 if future else -1)},
         )
-    assert await module.forecast_ready("DK1", "v1") is expected
-    assert await module.forecast_ready("DK2", "v1") is False
+    assert await module.forecast_ready("DK1", "v1", as_of=now) is expected
+    assert await module.forecast_ready("DK2", "v1", as_of=now) is False
 
 
 @pytest.mark.parametrize("minute", [0, 8])

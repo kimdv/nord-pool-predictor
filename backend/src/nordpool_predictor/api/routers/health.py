@@ -55,23 +55,25 @@ async def health_check() -> HealthResponse:
     sources: list[SourceFreshness] = []
     degraded = False
     now = datetime.now(UTC)
-    settings = get_settings()
-    owners = {
-        "prices": settings.area_codes,
-        "weather": [point.id for area in settings.areas.values() for point in area.weather_points],
-        "production": settings.area_codes,
-        "crossborder": [
-            connection
-            for area in settings.area_codes
-            for connection in EXCHANGE_COLUMNS.get(area, {}).values()
-        ],
-    }
     # Prediction selects hourly snapshots for its first quarter-hour target.
     next_target = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
     target_hour = (next_target + timedelta(minutes=15)).replace(minute=0)
     bootstrapping = False
 
     try:
+        settings = get_settings()
+        owners = {
+            "prices": settings.area_codes,
+            "weather": [
+                point.id for area in settings.areas.values() for point in area.weather_points
+            ],
+            "production": settings.area_codes,
+            "crossborder": [
+                connection
+                for area in settings.area_codes
+                for connection in EXCHANGE_COLUMNS.get(area, {}).values()
+            ],
+        }
         async with get_session() as session:
             bootstrap_result = await session.execute(
                 text(
