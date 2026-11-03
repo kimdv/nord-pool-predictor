@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -17,6 +18,7 @@ ACTUALS_DATASET = "ElectricityProdex5MinRealtime"
 FORECASTS_DATASET = "Forecasts_Hour"
 SOURCE_ACTUALS = "energidataservice_actual"
 SOURCE_FORECAST = "energidataservice_forecast_v2"
+SOURCE_DAY_AHEAD_HISTORY = "energidataservice_day_ahead_history_v1"
 
 ACTUAL_COLUMNS = "Minutes5UTC,Minutes5DK,OffshoreWindPower,OnshoreWindPower,SolarPower,PriceArea"
 FORECAST_COLUMNS = (
@@ -255,6 +257,92 @@ async def ingest_production_forecasts() -> None:
     rows = _parse_forecast_records(records)
     count = await _upsert_forecasts(rows)
     logger.info("Production forecast ingestion complete: %d rows", count)
+
+
+def _parse_day_ahead_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Historical day-ahead values published at 18:00 Copenhagen the preceding day.
+
+    ForecastCurrent and TimestampUTC describe a different vintage and are deliberately
+    ignored. Availability is reconstructed from the provider's publication schedule.
+    """
+    inputs = []
+    zone = ZoneInfo("Europe/Copenhagen")
+    for record in records:
+        raw_target = record.get("HourUTC")
+        if raw_target is None:
+            continue
+        target = datetime.fromisoformat(str(raw_target)).replace(tzinfo=UTC)
+        publication_day = target.astimezone(zone).date() - timedelta(days=1)
+        published = (
+            datetime.combine(publication_day, datetime.min.time(), tzinfo=zone)
+            .replace(hour=18)
+            .astimezone(UTC)
+        )
+        inputs.append(
+            {
+                "HourUTC": raw_target,
+                "PriceArea": record.get("PriceArea"),
+                "ForecastType": record.get("ForecastType"),
+                "ForecastCurrent": record.get("ForecastDayAhead"),
+                "TimestampUTC": published.isoformat(),
+            }
+        )
+    rows = _parse_forecast_records(inputs)
+    for row in rows:
+        row["source"] = SOURCE_DAY_AHEAD_HISTORY
+    return rows
+
+
+async def backfill_production_forecasts(days: int = 365) -> int:
+    """Idempotent historical forecasts, separate from live observation-time snapshots."""
+    if not 1 <= days <= 365:
+        raise ValueError("Production forecast backfill must be between 1 and 365 days")
+    settings = get_settings()
+    end = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=days)
+    total = 0
+    while start < end:
+        next_month = (start.replace(day=1) + timedelta(days=32)).replace(day=1)
+        chunk_end = min(next_month, end)
+        records = await eds_get(
+            FORECASTS_DATASET,
+            {
+                "start": start.strftime("%Y-%m-%dT%H:%M"),
+                "end": chunk_end.strftime("%Y-%m-%dT%H:%M"),
+                "filter": json.dumps({"PriceArea": settings.area_codes}),
+                "columns": "HourUTC,PriceArea,ForecastType,ForecastDayAhead",
+                "sort": "HourUTC asc",
+                "limit": "0",
+            },
+        )
+        # Reject out-of-range/foreign records rather than importing unrelated values.
+        rows = [
+            row
+            for row in _parse_day_ahead_records(records)
+            if start <= row["ts"] < chunk_end and row["area"] in settings.area_codes
+        ]
+        if rows:
+            async with get_session() as session:
+                await session.execute(
+                    text("""
+                    INSERT INTO production_forecasts (area, ts, issued_at, wind_mw, solar_mw,
+                        source, oldest_component_issued_at, components_json)
+                    VALUES (:area, :ts, :issued_at, :wind_mw, :solar_mw, :source,
+                        :oldest_component_issued_at, CAST(:components_json AS jsonb))
+                    ON CONFLICT (area, issued_at, ts, source) DO NOTHING
+                """),
+                    [
+                        {**row, "components_json": json.dumps(row["components_json"])}
+                        for row in rows
+                    ],
+                )
+                await session.commit()
+            total += len(rows)
+        logger.info(
+            "Historical day-ahead production %s→%s: %d snapshots", start, chunk_end, len(rows)
+        )
+        start = chunk_end
+    return total
 
 
 async def backfill_production(days: int = 365) -> None:

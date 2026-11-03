@@ -320,10 +320,30 @@ waits for the current job; configure a suitable grace period for long training.
 
 Feature set `v2-asof` uses price rolling statistics anchored strictly before
 issuance and selects weather, production, and cross-border forecast snapshots
-whose `issued_at` is no later than that issuance. Historical observations are
-not substituted for future covariates. Missing historical snapshots stay missing;
-collect forecast vintages over time to improve training coverage. The migration deactivates older feature sets so the worker bootstrap retrains
+available no later than that issuance. Production feature readers share the
+`production_feature_snapshots` compatibility view: legacy aggregate snapshots use
+their recorded `created_at` as conservative availability; component-backed snapshots
+use their observation-based `issued_at`. Stored values and timestamps remain unchanged.
+Historical observations are not substituted for future covariates.
+The migration deactivates older feature sets so the worker bootstrap retrains
 models with this contract before generating new forecasts.
+
+Training metrics report non-null wind/solar sample counts, coverage fractions, and
+snapshot availability provenance. Sparse history and a missing wind or solar input
+are accepted. Only when both inputs are entirely absent does the durable retraining
+job attempt a historical forecast backfill, then rebuild its training matrix once.
+Failed retrieval or still-missing inputs preserve a usable active model. With no
+usable model, first-install training can retain its baseline behavior and explicitly
+reports `baseline_without_production` in model metrics.
+
+The fallback requests at most 365 days in monthly chunks, using only
+`Forecasts_Hour.ForecastDayAhead`, stored idempotently under the separate
+`energidataservice_day_ahead_history_v1` source. Availability follows Energinet's
+documented 18:00 Europe/Copenhagen publication on the preceding local day, converted
+to UTC ([dataset metadata](https://api.energidataservice.dk/meta/dataset/Forecasts_Hour)).
+`ForecastCurrent` and its `TimestampUTC` do not reconstruct historical availability.
+No production audit, deletion, mandatory recollection, or unconditional upgrade
+backfill is required.
 
 On each start the worker checks every configured area independently. Existing
 models are reused only when their feature set and all quantile artifacts are
@@ -382,7 +402,7 @@ loading/prediction run outside the API event loop.
 
 Production forecast snapshots retain issuance timestamps per area, target hour, and
 source snapshot. Legacy `energidataservice_forecast` rows used response-wide stamps
-and are excluded from readiness and feature loading; startup refetches corrected
+and are excluded from live readiness; startup refetches corrected
 snapshots under `energidataservice_forecast_v2`. Missing source timestamps are not
 replaced with fetch time. Production observations preserve missing values and genuine
 zeroes; reingestion corrects previously stored observations.
@@ -392,7 +412,8 @@ so fresh wind data cannot mask stale solar data (or vice versa).
 Snapshot-local component state carries missing response fields forward and lets late
 arrivals or same-timestamp revisions append a new snapshot without changing historical
 inputs. Unchanged, stale, and future-dated updates do not advance availability.
-Snapshots without component state are refetched rather than used for prediction or readiness.
+Live component merging and readiness require component state; historical training
+and prediction features can use older aggregates through the compatibility view.
 
 `GET /api/health/live` checks process responsiveness without database queries.
 `GET /api/health/ready` returns HTTP 503 when the database fails, bootstrap is

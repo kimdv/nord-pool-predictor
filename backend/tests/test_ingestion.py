@@ -436,12 +436,15 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
         """),
             {"ts": target, "issued": now},
         )
-    # Pre-009 v2 aggregates lack component state and must not seed prediction.
+    # Legacy aggregates are not available before their recorded receipt time.
     before = load_asof_covariates(
         sync_database, pd.DataFrame(index=pd.DatetimeIndex([target])), "DK2", now, "production"
     )
     assert pd.isna(before["wind_mw"].iloc[0])
-    assert _query_production_fc(sync_database, "DK2", target, target).empty
+    assert _query_production_fc(sync_database, "DK2", target, target)["wind_mw"].iloc[0] in {
+        88,
+        99,
+    }
     records = [
         {
             "PriceArea": area,

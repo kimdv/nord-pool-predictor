@@ -52,9 +52,12 @@ def load_asof_covariates(
         """
     elif kind == "production":
         owners = json.dumps([area])
-        table, owner = "production_forecasts", "area"
-        fields = "wind_mw, solar_mw"
-        aggregates = "AVG(wind_mw) AS wind_mw, AVG(solar_mw) AS solar_mw"
+        table, owner = "production_feature_snapshots", "area"
+        fields = "wind_mw, solar_mw, availability_basis"
+        aggregates = (
+            "AVG(wind_mw) AS wind_mw, AVG(solar_mw) AS solar_mw, "
+            "MAX(availability_basis) AS _production_basis"
+        )
     elif kind == "crossborder":
         with engine.connect() as conn:
             owners = json.dumps(
@@ -75,12 +78,7 @@ def load_asof_covariates(
         raise ValueError(f"Unknown covariate kind: {kind}")
 
     # All identifiers above are internal constants. Issuance and target times are bound data.
-    source_filter = (
-        "AND f.source <> 'energidataservice_forecast' "
-        "AND (f.source <> 'energidataservice_forecast_v2' OR f.components_json IS NOT NULL)"
-        if kind == "production"
-        else ""
-    )
+    availability = "available_at" if kind == "production" else "issued_at"
     query = text(f"""
         WITH targets AS (
             SELECT * FROM jsonb_to_recordset(CAST(:targets AS jsonb))
@@ -92,9 +90,8 @@ def load_asof_covariates(
             SELECT {fields} FROM {table} f
             WHERE f.{owner} = o.id
               AND f.ts = date_trunc('hour', t.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-              AND f.issued_at <= t.issued_at
-              {source_filter}
-            ORDER BY f.issued_at DESC LIMIT 1
+              AND f.{availability} <= t.issued_at
+            ORDER BY f.{availability} DESC, f.issued_at DESC, f.source LIMIT 1
         ) snapshot ON TRUE
         GROUP BY t.ts ORDER BY t.ts
     """)
@@ -122,4 +119,10 @@ def load_asof_covariates(
         for column in columns:
             df[column] = np.nan
         return df
-    return df.join(values.set_index("ts"), how="left")
+    provenance = None
+    if kind == "production":
+        provenance = values.pop("_production_basis").fillna("unavailable").value_counts().to_dict()
+    result = df.join(values.set_index("ts"), how="left")
+    if provenance is not None:
+        result.attrs["production_provenance"] = {str(key): int(n) for key, n in provenance.items()}
+    return result
