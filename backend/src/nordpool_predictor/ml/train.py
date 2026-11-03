@@ -30,8 +30,6 @@ N_OPTUNA_TRIALS = 50
 N_CV_SPLITS = 5
 EARLY_STOPPING_ROUNDS = 50
 QUANTILES: dict[str, float] = {"p10": 0.1, "p50": 0.5, "p90": 0.9}
-# Maximum forecast horizon in 15-min steps (7 days × 96 steps/day).
-MAX_HORIZON_STEPS = 672
 
 
 class ProductionHistoryBackfill:

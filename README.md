@@ -11,7 +11,7 @@ A local Nord Pool day-ahead electricity price forecasting system for the Danish 
 
 ## Overview
 
-The system ingests hourly spot prices, weather forecasts, wind/solar production data, and cross-border electricity flows. It trains quantile LightGBM models (p10/p50/p90) to predict the next 7 days (168 hours) of prices with confidence bands, evaluates forecast accuracy against actuals and naive baselines, and exposes everything through a REST API consumed by a web dashboard and Home Assistant.
+The system ingests hourly spot prices, weather forecasts, wind/solar production data, and cross-border electricity flows. It trains quantile LightGBM models (p10/p50/p90) to predict prices with confidence bands for 8 days, including a 1-day buffer between refreshes. The dashboard shows the next 7 days (168 hours), using actual spot prices wherever available and forecasts for the remaining slots. The system evaluates forecast accuracy against actuals and naive baselines, and exposes everything through a REST API consumed by the dashboard and Home Assistant.
 
 ### Architecture
 
@@ -97,7 +97,7 @@ All times are in CET/CEST (Europe/Copenhagen):
 | 13:20 | `ingest_weather` | Fetch latest weather forecasts for all zones |
 | 13:30 | `ingest_crossborder` | Fetch cross-border flow data |
 | 17:55 | `ingest_production` | Fetch wind/solar production forecasts |
-| 18:05 | `refresh_forecast` | Run ML prediction for next 7 days |
+| 00:05, 06:05, 12:05, 18:05 | `refresh_forecast` | Predict 8 days, including a 1-day buffer to keep the dashboard's next 7 days covered |
 | 06:00 | `score_forecasts` | Compare yesterday's predictions to actuals |
 | Sun 03:00 | `cleanup` | Trim old data beyond retention windows |
 | Sun 04:00 | `retrain_model` | Retrain models with Optuna hyperparameter tuning |

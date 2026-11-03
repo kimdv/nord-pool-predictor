@@ -45,6 +45,7 @@ export default function PriceChart({
 
   const lastActualIdx = data.findLastIndex((d) => d.actual != null);
   const cutoffTimestamp = lastActualIdx >= 0 ? data[lastActualIdx].ts : null;
+  const hasMissingPrices = data.some((point) => point.actual == null && point.predicted == null);
   const nowMs = Date.now();
   let nowTimestamp: string | null = null;
   let bestNowDiff = Infinity;
@@ -102,6 +103,11 @@ export default function PriceChart({
           </button>
         </label>
       </div>
+      {hasMissingPrices && (
+        <p role="status" className="text-sm text-amber-700 mb-4">
+          Prognosen dækker endnu ikke alle de næste 7 dage. Manglende priser vises som huller.
+        </p>
+      )}
       <div className="h-80">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
