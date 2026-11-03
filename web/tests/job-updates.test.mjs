@@ -22,6 +22,17 @@ test("the initial snapshot does not request a redundant dashboard refresh", () =
   assert.equal(hasNewlyFinishedJobs(null, snapshot(job())), false);
 });
 
+for (const status of ["completed", "failed"]) {
+  test(`bootstrap ${status} before the first poll still refreshes`, () => {
+    assert.equal(hasNewlyFinishedJobs(null, snapshot(job({job_type: "bootstrap", last_status: status}))), true);
+  });
+  test(`bootstrap ${status} entirely between polls still refreshes`, () => {
+    const current = snapshot(job({job_type: "bootstrap", last_status: status}));
+    assert.equal(hasNewlyFinishedJobs({}, current), true);
+    assert.equal(hasNewlyFinishedJobs(current, current), false);
+  });
+}
+
 test("an unchanged completed job does not refresh on every poll", () => {
   assert.equal(hasNewlyFinishedJobs(snapshot(job()), snapshot(job())), false);
 });

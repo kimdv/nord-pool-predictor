@@ -41,7 +41,7 @@ async def test_midnight_recovery_uses_validated_inputs_and_repairs_expired_forec
                             (area, model_version, issued_at, horizon_steps, status)
                         VALUES ('DK1', 'v1', :issued, 672, 'completed') RETURNING run_id
                     """),
-                    {"issued": after.replace(minute=0) - timedelta(days=7)},
+                    {"issued": before - timedelta(hours=1)},
                 )
             ).scalar_one()
             await conn.execute(
@@ -77,6 +77,8 @@ async def test_midnight_recovery_uses_validated_inputs_and_repairs_expired_forec
         patch.object(prices, "_fetch_chunk", AsyncMock(side_effect=fetch)),
         patch.object(predict, "_load_models", side_effect=load_models),
         patch.object(bootstrap, "ingest_production_forecasts", AsyncMock()),
+        patch.object(bootstrap, "ingest_production_actuals", AsyncMock()),
+        patch.object(bootstrap, "ingest_crossborder_flows", AsyncMock()),
         patch("nordpool_predictor.ml.features._get_sync_engine", return_value=sync_database),
         patch("nordpool_predictor.ml.asof.get_settings", return_value=test_settings),
     ):

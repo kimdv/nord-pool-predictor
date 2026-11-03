@@ -16,6 +16,7 @@ from sqlalchemy import text
 
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
+from nordpool_predictor.ingestion.production import backfill_production_forecasts
 from nordpool_predictor.ml.artifacts import write_manifest
 from nordpool_predictor.ml.features import (
     HORIZON_STEP_FEATURE,
@@ -31,6 +32,24 @@ EARLY_STOPPING_ROUNDS = 50
 QUANTILES: dict[str, float] = {"p10": 0.1, "p50": 0.5, "p90": 0.9}
 # Maximum forecast horizon in 15-min steps (7 days × 96 steps/day).
 MAX_HORIZON_STEPS = 672
+
+
+class ProductionHistoryBackfill:
+    """Share one historical retrieval across the sequential areas in a job."""
+
+    def __init__(self) -> None:
+        self._attempted = False
+        self._error: Exception | None = None
+
+    async def run(self) -> None:
+        if not self._attempted:
+            self._attempted = True
+            try:
+                await backfill_production_forecasts(days=365)
+            except Exception as exc:
+                self._error = exc
+        if self._error is not None:
+            raise self._error
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +103,10 @@ def _objective(
 
 
 def _train_sync(
-    area: str, settings_training_window_days: int, model_dir_str: str
+    area: str,
+    settings_training_window_days: int,
+    model_dir_str: str,
+    training_data: pd.DataFrame | None = None,
 ) -> tuple[
     str,
     str,
@@ -97,7 +119,7 @@ def _train_sync(
     start = now - timedelta(days=settings_training_window_days)
 
     logger.info("Building feature matrix for %s [%s → %s]", area, start, now)
-    df = build_feature_matrix(area, start, now)
+    df = training_data if training_data is not None else build_feature_matrix(area, start, now)
 
     if df.empty:
         raise ValueError(f"No training data available for area {area}")
@@ -176,6 +198,7 @@ def _train_sync(
     mae, rmse, bias = evaluation["mae"], evaluation["rmse"], evaluation["bias"]
 
     metrics = {
+        "production_data": production_training_metrics(df),
         "mae": mae,
         "rmse": rmse,
         "bias": bias,
@@ -198,7 +221,9 @@ def _train_sync(
     return model_version, manifest, metrics, trained_models, now
 
 
-async def train_models(area: str) -> str:
+async def train_models(
+    area: str, *, production_backfill: ProductionHistoryBackfill | None = None
+) -> str:
     """Train p10 / p50 / p90 quantile LightGBM models for *area*.
 
     Returns the ``model_version`` string (e.g. ``lgbm-DK1-20260406-134500-<id>``).
@@ -212,11 +237,13 @@ async def train_models(area: str) -> str:
         settings.training_window_days,
     )
 
+    training_data = await prepare_training_data(area, production_backfill=production_backfill)
     model_version, artifact_path, metrics, _models, now = await asyncio.to_thread(
         _train_sync,
         area,
         settings.training_window_days,
         settings.model_dir,
+        training_data,
     )
 
     async def register_model(connection) -> None:
@@ -271,6 +298,90 @@ async def train_models(area: str) -> str:
         metrics["bias"],
     )
     return model_version
+
+
+def production_training_metrics(frame: pd.DataFrame) -> dict:
+    coverage = {}
+    for column in ("wind_mw", "solar_mw"):
+        present = int(frame[column].notna().sum()) if column in frame else 0
+        coverage[column] = {
+            "non_null_samples": present,
+            "fraction": present / len(frame) if len(frame) else 0.0,
+        }
+    return {
+        "coverage": coverage,
+        "provenance": frame.attrs.get("production_provenance", {}),
+        "baseline_without_production": not any(v["non_null_samples"] for v in coverage.values()),
+    }
+
+
+async def _has_usable_active_model(area: str) -> bool:
+    from nordpool_predictor.ml.predict import ModelUnavailableError, select_usable_model
+
+    async with get_session() as session:
+        candidates = (
+            (
+                await session.execute(
+                    text("""
+            SELECT model_version, artifact_path FROM model_versions
+            WHERE area = :area AND is_active = TRUE AND feature_set_version = 'v2-asof'
+            ORDER BY trained_at DESC, model_version DESC
+        """),
+                    {"area": area},
+                )
+            )
+            .mappings()
+            .all()
+        )
+    try:
+        await select_usable_model(area, candidates)
+    except ModelUnavailableError:
+        return False
+    return True
+
+
+async def prepare_training_data(
+    area: str, *, production_backfill: ProductionHistoryBackfill | None = None
+) -> pd.DataFrame:
+    """Recover missing production history once, before tuning or writing artifacts."""
+    import asyncio
+
+    settings = get_settings()
+
+    async def build() -> pd.DataFrame:
+        now = datetime.now(UTC)
+        frame = await asyncio.to_thread(
+            build_feature_matrix, area, now - timedelta(days=settings.training_window_days), now
+        )
+        if frame.empty or TARGET not in frame:
+            raise ValueError(f"No training data available for area {area}")
+        frame = frame.dropna(subset=[TARGET])
+        if len(frame) < 100:
+            raise ValueError(f"Insufficient training samples for {area}: {len(frame)}")
+        return frame
+
+    frame = await build()
+    metrics = production_training_metrics(frame)
+    if metrics["baseline_without_production"]:
+        preserve_existing = await _has_usable_active_model(area)
+        try:
+            await (production_backfill or ProductionHistoryBackfill()).run()
+        except Exception as exc:
+            if preserve_existing:
+                raise RuntimeError(
+                    "Production history backfill failed; active model preserved"
+                ) from exc
+            logger.exception("Production backfill failed; checking first-install baseline inputs")
+        frame = await build()
+        metrics = production_training_metrics(frame)
+        if metrics["baseline_without_production"]:
+            if preserve_existing:
+                raise ValueError("No usable wind/solar training history; active model preserved")
+            logger.warning(
+                "Training first-install baseline for %s without production inputs", area
+            )
+    logger.info("Production training data for %s: %s", area, metrics)
+    return frame
 
 
 def split_holdout(X: pd.DataFrame, y: pd.Series):

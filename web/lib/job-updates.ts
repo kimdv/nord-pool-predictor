@@ -4,7 +4,12 @@ export function hasNewlyFinishedJobs(
   previous: Record<string, JobSummary> | null,
   current: Record<string, JobSummary>,
 ): boolean {
-  if (!previous) return false;
+  // The page may have rendered before a short bootstrap finished, even if
+  // the first client poll already sees its completion.
+  if (!previous) {
+    const bootstrap = current.bootstrap;
+    return bootstrap?.last_status === "completed" || bootstrap?.last_status === "failed";
+  }
 
   return Object.values(current).some((job) => {
     if (job.last_status !== "completed" && job.last_status !== "failed") {

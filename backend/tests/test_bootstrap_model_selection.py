@@ -79,6 +79,8 @@ async def test_bootstrap_forecasts_only_with_the_validated_model(
         patch.object(bootstrap, "backfill_prices", AsyncMock()),
         patch.object(bootstrap, "verify_price_history", AsyncMock()),
         patch.object(bootstrap, "ingest_production_forecasts", AsyncMock()),
+        patch.object(bootstrap, "ingest_production_actuals", AsyncMock()),
+        patch.object(bootstrap, "ingest_crossborder_flows", AsyncMock()),
         patch.object(bootstrap, "ingest_weather_forecasts", side_effect=weather),
     ):
         if scenario == "activation_changed":

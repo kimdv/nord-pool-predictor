@@ -142,6 +142,7 @@ def build_feature_matrix(
     df = add_issuance_price_features(df, history, cutoffs)
     df = add_weather_features(df, area, issued_at=cutoffs)
     df = add_production_features(df, area, issued_at=cutoffs)
+    production_provenance = df.attrs.get("production_provenance", {})
     df = add_crossborder_features(df, area, issued_at=cutoffs)
     df = add_cross_features(df)
     df = add_residual_load_features(df)
@@ -151,6 +152,7 @@ def build_feature_matrix(
         if df[col].dtype == object:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    df.attrs["production_provenance"] = production_provenance
     return df
 
 
@@ -370,9 +372,9 @@ def _query_production_fc(
 ) -> pd.DataFrame:
     query = text(
         "SELECT DISTINCT ON (ts) ts, wind_mw, solar_mw "
-        "FROM production_forecasts "
+        "FROM production_feature_snapshots "
         "WHERE area = :area AND ts >= :ts_min AND ts <= :ts_max "
-        "ORDER BY ts, issued_at DESC"
+        "ORDER BY ts, available_at DESC, issued_at DESC, source"
     )
     with engine.connect() as conn:
         df = pd.read_sql(

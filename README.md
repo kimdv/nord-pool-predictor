@@ -233,7 +233,7 @@ services:
     restart: always
     depends_on:
       nordpool-app:
-        condition: service_healthy
+        condition: service_started
     environment:
       - API_BASE_URL=http://nordpool-app:8000
     ports:
@@ -320,10 +320,34 @@ waits for the current job; configure a suitable grace period for long training.
 
 Feature set `v2-asof` uses price rolling statistics anchored strictly before
 issuance and selects weather, production, and cross-border forecast snapshots
-whose `issued_at` is no later than that issuance. Historical observations are
-not substituted for future covariates. Missing historical snapshots stay missing;
-collect forecast vintages over time to improve training coverage. The migration deactivates older feature sets so the worker bootstrap retrains
+available no later than that issuance. Production feature readers share the
+`production_feature_snapshots` compatibility view: legacy aggregate snapshots use
+their recorded `created_at` as conservative availability; component-backed snapshots
+use their observation-based `issued_at`. Stored values and timestamps remain unchanged.
+Historical observations are not substituted for future covariates.
+The migration deactivates older feature sets so the worker bootstrap retrains
 models with this contract before generating new forecasts.
+
+Training metrics report non-null wind/solar sample counts, coverage fractions, and
+snapshot availability provenance. Sparse history and a missing wind or solar input
+are accepted. Only when both inputs are entirely absent does the durable retraining
+job attempt a historical forecast backfill, then rebuild its training matrix once.
+Bootstrap and retraining share that one retrieval attempt across configured areas,
+including empty or failed retrievals; a later job can retry.
+Failed retrieval or still-missing inputs preserve a usable active model. With no
+usable model, first-install training can retain its baseline behavior and explicitly
+reports `baseline_without_production` in model metrics.
+
+The fallback requests at most 365 days in monthly chunks, using only
+`Forecasts_Hour.ForecastDayAhead`, stored idempotently under the separate
+`energidataservice_day_ahead_history_v1` source. Availability follows Energinet's
+documented 18:00 Europe/Copenhagen publication on the preceding local day, converted
+to UTC ([dataset metadata](https://api.energidataservice.dk/meta/dataset/Forecasts_Hour)).
+`ForecastCurrent` and its `TimestampUTC` do not reconstruct historical availability.
+No production audit, deletion, mandatory recollection, or unconditional upgrade
+backfill is required.
+Coverage reported for an existing price run excludes reconstructed history imported
+after that run's issuance, even when its scheduled publication was earlier.
 
 On each start the worker checks every configured area independently. Existing
 models are reused only when their feature set and all quantile artifacts are
@@ -377,3 +401,44 @@ and manifest writes are atomic; registration happens only after the complete
 bundle is written. Existing directory registrations remain readable through the
 same shared loader. Model objects use a bounded per-process cache, and model
 loading/prediction run outside the API event loop.
+
+### Health probes
+
+Production forecast snapshots retain issuance timestamps per area, target hour, and
+source snapshot. Legacy `energidataservice_forecast` rows used response-wide stamps
+and are excluded from live readiness; startup refetches corrected
+snapshots under `energidataservice_forecast_v2`. Missing source timestamps are not
+replaced with fetch time. Production observations preserve missing values and genuine
+zeroes; reingestion corrects previously stored observations.
+Updates carry forward the components already known for that hour. A snapshot becomes
+available when its component updates are observed; readiness uses its oldest source timestamp
+so fresh wind data cannot mask stale solar data (or vice versa).
+Snapshot-local component state carries missing response fields forward and lets late
+arrivals or same-timestamp revisions append a new snapshot without changing historical
+inputs. Unchanged, stale, and future-dated updates do not advance availability.
+Live component merging and readiness require component state; historical training
+and prediction features can use older aggregates through the compatibility view.
+
+`GET /api/health/live` checks process responsiveness without database queries.
+`GET /api/health/ready` returns HTTP 503 when the database fails, bootstrap is
+pending/running, source data is stale, or any configured area lacks a recent
+successful forecast with future values. Docker uses readiness for app health;
+the dashboard starts once the app starts so it remains accessible during bootstrap.
+The existing `/api/health` remains a detailed dashboard status endpoint.
+Failed or running forecasts do not advance successful forecast freshness, and
+`last_forecast_at` is the oldest latest-success timestamp across configured areas.
+It is null when any configured area has no successful forecast.
+Startup recovery regenerates successful forecasts older than the same 26-hour limit
+and refreshes production observations and cross-border flows when historical backfills
+were skipped or failed.
+Weather, production forecasts, and recent prices are refreshed even when every
+area already has a fresh price forecast, without regenerating those forecasts.
+Source freshness uses observation times for each configured area's prices and production,
+and each supported cross-border connection touching a configured area, including shared
+connections when only one endpoint is configured. Weather is checked for every configured
+weather point. Weather and production forecasts must have an issuance within 26 hours,
+available now, covering the hourly bucket of the next quarter-hour prediction target.
+The latest snapshot must contain a usable measurement; an all-null snapshot cannot
+fall back to an older populated snapshot during readiness checks.
+Each source reports its oldest required input timestamp, or no timestamp if an input
+is missing. Existing owner/timestamp indexes support these checks without new index builds.

@@ -7,10 +7,12 @@ from sqlalchemy import text
 
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
-from nordpool_predictor.ingestion.crossborder import backfill_crossborder
+from nordpool_predictor.freshness import FORECAST_MAX_AGE
+from nordpool_predictor.ingestion.crossborder import backfill_crossborder, ingest_crossborder_flows
 from nordpool_predictor.ingestion.prices import backfill_prices
 from nordpool_predictor.ingestion.production import (
     backfill_production,
+    ingest_production_actuals,
     ingest_production_forecasts,
 )
 from nordpool_predictor.ingestion.weather import backfill_weather, ingest_weather_forecasts
@@ -20,7 +22,7 @@ from nordpool_predictor.ml.predict import (
     run_forecast,
     select_usable_model,
 )
-from nordpool_predictor.ml.train import train_models
+from nordpool_predictor.ml.train import ProductionHistoryBackfill, train_models
 
 logger = logging.getLogger(__name__)
 
@@ -55,21 +57,31 @@ async def ready_models() -> dict[str, str]:
 
 
 async def forecast_ready(area: str, model_version: str, *, as_of: datetime | None = None) -> bool:
+    now = as_of if as_of is not None else datetime.now(UTC)
     async with get_session() as session:
         return bool(
             (
                 await session.execute(
                     text("""
             SELECT EXISTS (
-                SELECT 1 FROM forecast_runs fr JOIN forecast_values fv USING (run_id)
-                WHERE fr.area = :area AND fr.model_version = :version
-                  AND fr.status IN ('completed', 'scored') AND fv.ts > :as_of
+                SELECT 1 FROM (
+                    SELECT run_id, issued_at FROM forecast_runs
+                    WHERE area = :area AND model_version = :version
+                      AND status IN ('completed', 'scored')
+                    ORDER BY issued_at DESC LIMIT 1
+                ) fr
+                WHERE fr.issued_at BETWEEN :fresh_since AND :as_of
+                  AND EXISTS (
+                    SELECT 1 FROM forecast_values fv
+                    WHERE fv.run_id = fr.run_id AND fv.ts > :as_of
+                  )
             )
         """),
                     {
                         "area": area,
                         "version": model_version,
-                        "as_of": as_of if as_of is not None else datetime.now(UTC),
+                        "as_of": now,
+                        "fresh_since": now - FORECAST_MAX_AGE,
                     },
                 )
             ).scalar()
@@ -119,6 +131,7 @@ async def bootstrap() -> None:
 
     shared_history_ready = True
     price_window_fetched_until: datetime | None = None
+    production_backfill = ProductionHistoryBackfill()
     if needs_training:
         # These sources fetch both areas together. A failure affects new training,
         # but must not block forecast recovery for already usable models.
@@ -142,7 +155,7 @@ async def bootstrap() -> None:
                 ) + timedelta(days=1)
 
     async def train_area(area: str) -> None:
-        models[area] = await train_models(area)
+        models[area] = await train_models(area, production_backfill=production_backfill)
 
     for area in needs_training:
         history_ready = await attempt(
@@ -154,15 +167,27 @@ async def bootstrap() -> None:
         if shared_history_ready and history_ready:
             await attempt(f"{area} training", train_area, area)
 
+    # Existing models skip historical backfills. Refresh observation feeds too,
+    # so a restart after downtime can restore source readiness without retraining.
+    if not needs_training or not shared_history_ready:
+        await attempt("production actuals", ingest_production_actuals)
+        await attempt("crossborder flows", ingest_crossborder_flows)
+
     attempted_areas: set[str] = set()
+    refreshed_areas: set[str] = set()
     failed_areas: set[str] = set()
     while True:
         # Reconcile again after recovery: previously-ready forecasts can expire
         # while another area is fetching data or generating its forecast.
         checked_at = datetime.now(UTC)
         forecast_areas = []
+        source_areas = []
         for area in settings.area_codes:
-            if area not in models or area in failed_areas:
+            if area in failed_areas:
+                continue
+            if area not in models:
+                if area not in refreshed_areas:
+                    source_areas.append(area)
                 continue
             try:
                 ready = await forecast_ready(area, models[area], as_of=checked_at)
@@ -172,6 +197,8 @@ async def bootstrap() -> None:
                 failed_areas.add(area)
                 continue
             if ready:
+                if area not in refreshed_areas:
+                    source_areas.append(area)
                 continue
             if area in attempted_areas:
                 # Each area gets one recovery attempt. Never spin indefinitely
@@ -180,19 +207,20 @@ async def bootstrap() -> None:
                 failed_areas.add(area)
             else:
                 forecast_areas.append(area)
-        if not forecast_areas:
+        if not forecast_areas and not source_areas:
             break
 
         production_ready = await attempt("production forecasts", ingest_production_forecasts)
-        for area in forecast_areas:
-            attempted_areas.add(area)
+        # A valid price forecast can outlive the inputs required by readiness.
+        # Refresh sources once even when no new forecast needs to be generated.
+        # Recover missing forecasts first, then reconcile again after all awaits.
+        for area in [*forecast_areas, *source_areas]:
+            refreshed_areas.add(area)
+            if area in forecast_areas:
+                attempted_areas.add(area)
             weather_ready = await attempt(
                 f"{area} weather forecasts", ingest_weather_forecasts, area=area
             )
-            if not weather_ready or not production_ready:
-                failed_areas.add(area)
-                continue
-
             # Capture issuance after live covariates arrive. Price preparation,
             # coverage validation and prediction must all use this same cutoff,
             # even if their awaits cross a quarter-hour or UTC-day boundary.
@@ -204,6 +232,12 @@ async def bootstrap() -> None:
                 price_window_fetched_until = issued_at.replace(
                     hour=0, minute=0, second=0, microsecond=0
                 ) + timedelta(days=1)
+            # Prices recover independently of weather and production availability.
+            if not weather_ready or not production_ready:
+                failed_areas.add(area)
+                continue
+            if area not in forecast_areas:
+                continue
             if not await attempt(
                 f"{area} price history", verify_price_history, area, issued_at=issued_at
             ):

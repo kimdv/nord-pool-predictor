@@ -78,11 +78,19 @@ async def running_jobs() -> dict[str, list[str]]:
 
 
 _SUMMARY_SQL = f"""
-WITH activity AS (
-    SELECT job_type, status, started_at, finished_at FROM job_runs
+WITH latest_bootstrap AS (
+    SELECT job_name, status, COALESCE(started_at, created_at) AS started_at, finished_at
+    FROM job_requests WHERE job_name = 'bootstrap'
+    ORDER BY created_at DESC, job_id DESC LIMIT 1
+), activity AS (
+    SELECT job_type, status, started_at, finished_at FROM job_runs WHERE job_type <> 'bootstrap'
     UNION ALL
-    SELECT job_name, 'running', COALESCE(started_at, created_at), finished_at
-    FROM job_requests WHERE status IN ('pending', 'running')
+    SELECT job_name, CASE WHEN status = 'pending' THEN 'running' ELSE status END,
+           COALESCE(started_at, created_at), finished_at
+    FROM job_requests WHERE status IN ('pending', 'running') AND job_name <> 'bootstrap'
+    UNION ALL
+    SELECT job_name, CASE WHEN status = 'pending' THEN 'running' ELSE status END,
+           started_at, finished_at FROM latest_bootstrap
 ), latest AS (
     SELECT job_type, MAX(started_at) AS max_started_at
     FROM activity
