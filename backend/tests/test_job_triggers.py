@@ -25,9 +25,7 @@ async def test_manual_jobs_can_be_queued_without_credentials(job_name):
     operation.assert_awaited_once_with(job_name)
 
 
-@pytest.mark.parametrize(
-    ("job_name", "status"), [("unknown_job", 404), ("ingest_weather", 409)]
-)
+@pytest.mark.parametrize(("job_name", "status"), [("unknown_job", 404), ("ingest_weather", 409)])
 async def test_manual_job_errors_are_preserved(job_name, status):
     app = FastAPI()
     app.include_router(router)
