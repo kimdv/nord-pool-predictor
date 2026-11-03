@@ -8,8 +8,9 @@ tests are hermetic and don't touch the network."""
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -24,13 +25,13 @@ CPH = ZoneInfo("Europe/Copenhagen")
 def stub_tariffs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Replace EDS-backed tariff lookups with deterministic in-memory values."""
 
-    async def _flat(_code: str) -> float:
+    async def _flat(_code: str, _day: date) -> float:
         return 0.05
 
-    async def _hourly(_gln: str, _code: str) -> list[float]:
+    async def _hourly(_gln: str, _code: str, _day: date) -> list[float]:
         return [0.5] * 24
 
-    async def _nettab(_area: str) -> list[float]:
+    async def _nettab(_area: str, _day: date) -> list[float]:
         return [0.1] * 24
 
     monkeypatch.setattr(tariffs, "_fetch_flat_tariff", _flat)
@@ -157,13 +158,13 @@ class TestBuildPriceBreakdown:
         value indexed by its local hour."""
         hourly = [0.01 * i for i in range(24)]
 
-        async def _hourly(_gln: str, _code: str) -> list[float]:
+        async def _hourly(_gln: str, _code: str, _day: date) -> list[float]:
             return hourly
 
-        async def _nettab(_area: str) -> list[float]:
+        async def _nettab(_area: str, _day: date) -> list[float]:
             return [0.0] * 24
 
-        async def _flat(_code: str) -> float:
+        async def _flat(_code: str, _day: date) -> float:
             return 0.05
 
         with pytest.MonkeyPatch.context() as mp:
@@ -210,16 +211,73 @@ async def test_zero_and_missing_spot_prices_have_different_totals(stub_tariffs):
 
 
 async def test_official_zero_tariff_is_not_replaced_with_a_constant(monkeypatch):
-    from unittest.mock import AsyncMock
-
     monkeypatch.setattr(tariffs, "_fetch_latest_tariff", AsyncMock(return_value=[0.0] * 24))
-    assert await tariffs._fetch_flat_tariff(tariffs.ELAFGIFT_CODE) == 0
+    assert await tariffs._fetch_flat_tariff(tariffs.ELAFGIFT_CODE, date(2026, 1, 1)) == 0
 
 
 async def test_missing_tariff_does_not_become_zero(monkeypatch):
-    from unittest.mock import AsyncMock
-
     tariffs._tariff_cache.clear()
     monkeypatch.setattr(tariffs, "eds_get", AsyncMock(return_value=[]))
     with pytest.raises(tariffs.TariffUnavailableError):
-        await tariffs._fetch_latest_tariff("5790000000000", "MISSING")
+        await tariffs._fetch_latest_tariff("5790000000000", "MISSING", date(2026, 1, 1))
+
+
+async def test_all_tariffs_keep_the_anchored_day_when_fetch_crosses_midnight(monkeypatch):
+    tariffs._tariff_cache.clear()
+    seen = []
+    with time_machine.travel("2025-12-31T22:59:59Z", tick=False) as clock:
+
+        async def fetch(dataset, params, **kwargs):
+            seen.append(dict(params))
+            clock.move_to("2025-12-31T23:00:01Z")
+            return [
+                {"ValidFrom": "2026-01-01T00:00:00", "ValidTo": None, "Price1": 9.0},
+                {
+                    "ValidFrom": "2025-01-01T00:00:00",
+                    "ValidTo": "2026-01-01T00:00:00",
+                    "Price1": 0.1,
+                },
+            ]
+
+        monkeypatch.setattr(tariffs, "eds_get", fetch)
+        old = await tariffs.build_price_breakdown("DK1", "grid", "CD", {})
+        new = await tariffs.build_price_breakdown("DK1", "grid", "CD", {})
+        cached = await tariffs.build_price_breakdown(
+            "DK1", "grid", "CD", {}, day=date(2025, 12, 31)
+        )
+    for field in [
+        "grid_tariff",
+        "grid_loss_tariff",
+        "system_tariff",
+        "transmission_tariff",
+        "electricity_tax",
+    ]:
+        assert old[0][field] == cached[0][field] == 0.1
+        assert new[0][field] == 9
+    assert old[0]["ts"] == _utc_of("2025-12-31", 0, 0)
+    assert new[0]["ts"] == _utc_of("2026-01-01", 0, 0)
+    assert len(seen) == 10
+    assert [p["end"] for p in seen] == ["2026-01-01"] * 5 + ["2026-01-02"] * 5
+
+
+@pytest.mark.parametrize(
+    "start,end,usable",
+    [
+        ("2026-01-01T00:00:00", None, True),
+        ("2025-01-01T00:00:00", "2026-01-02T00:00:00", True),
+        ("2025-01-01T00:00:00", "2026-01-01T00:00:00", False),
+        ("2026-01-02T00:00:00", None, False),
+    ],
+)
+async def test_tariff_validity_uses_half_open_local_dates(monkeypatch, start, end, usable):
+    tariffs._tariff_cache.clear()
+    monkeypatch.setattr(
+        tariffs,
+        "eds_get",
+        AsyncMock(return_value=[{"ValidFrom": start, "ValidTo": end, "Price1": 0}]),
+    )
+    if usable:
+        assert await tariffs._fetch_latest_tariff("grid", "CD", date(2026, 1, 1)) == [0] * 24
+    else:
+        with pytest.raises(tariffs.TariffUnavailableError):
+            await tariffs._fetch_latest_tariff("grid", "CD", date(2026, 1, 1))

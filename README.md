@@ -448,3 +448,6 @@ Tariff slots carry `spot_source` (`actual`, `forecast`, or `missing`). Missing s
 prices and their totals are null, and the dashboard shows chart gaps and labels
 forecast estimates. Missing official tariff records return an upstream error
 instead of silently substituting zero or guessed tariff constants.
+Tariff lookups and cache entries use the same Copenhagen calendar date as the
+spot-price slots. Records must be valid on that date (`ValidFrom` inclusive,
+`ValidTo` exclusive), so crossing midnight during a request cannot mix tariff days.

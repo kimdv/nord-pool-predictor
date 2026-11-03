@@ -39,7 +39,11 @@ def _cache_get(key: str) -> Any | None:
 
 
 def _cache_set(key: str, value: Any) -> None:
-    _tariff_cache[key] = (time.monotonic(), value)
+    now = time.monotonic()
+    for cached_key, (cached_at, _) in list(_tariff_cache.items()):
+        if now - cached_at > _CACHE_TTL:
+            del _tariff_cache[cached_key]
+    _tariff_cache[key] = (now, value)
 
 
 DATAHUB_DATASET = "DatahubPricelist"
@@ -148,9 +152,10 @@ async def fetch_grid_tariff_codes(gln: str) -> list[dict[str, str]]:
 async def _fetch_latest_tariff(
     gln: str,
     charge_type_code: str,
+    day: date,
 ) -> list[float]:
-    """Return the 24 hourly prices for the latest valid tariff entry."""
-    cache_key = f"tariff:{gln}:{charge_type_code}"
+    """Return hourly prices valid on the requested Copenhagen calendar date."""
+    cache_key = f"tariff:{gln}:{charge_type_code}:{day.isoformat()}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -158,30 +163,36 @@ async def _fetch_latest_tariff(
     records = await eds_get(
         DATAHUB_DATASET,
         {
-            "end": "now",
+            # DatahubPricelist filters ValidFrom by local calendar date.
+            "end": (day + timedelta(days=1)).isoformat(),
             "filter": f'{{"GLN_Number":["{gln}"],"ChargeTypeCode":["{charge_type_code}"]}}',
             "sort": "ValidFrom DESC",
-            "limit": "1",
+            "limit": "0",
         },
         respect_rate_limit=False,
     )
-    if not records:
-        raise TariffUnavailableError("No tariff data available")
-    result = _extract_hourly_prices(records[0])
-    _cache_set(cache_key, result)
-    return result
+    for record in records:
+        valid_from = datetime.fromisoformat(record["ValidFrom"]).date()
+        valid_to = (
+            datetime.fromisoformat(record["ValidTo"]).date() if record.get("ValidTo") else None
+        )
+        if valid_from <= day and (valid_to is None or day < valid_to):
+            result = _extract_hourly_prices(record)
+            _cache_set(cache_key, result)
+            return result
+    raise TariffUnavailableError("No tariff data available for the requested day")
 
 
-async def _fetch_flat_tariff(code: str) -> float:
+async def _fetch_flat_tariff(code: str, day: date) -> float:
     """Fetch an official flat tariff; a valid zero remains zero."""
-    prices = await _fetch_latest_tariff(ENERGINET_GLN, code)
+    prices = await _fetch_latest_tariff(ENERGINET_GLN, code, day)
     return prices[0]
 
 
-async def _fetch_nettab_tariff(area: str) -> list[float]:
-    """Fetch the Energinet nettabstarif (grid loss) for today or latest available."""
+async def _fetch_nettab_tariff(area: str, day: date) -> list[float]:
+    """Fetch the Energinet nettabstarif (grid loss) valid on the requested date."""
     code = NETTAB_CODES[area]
-    return await _fetch_latest_tariff(ENERGINET_GLN, code)
+    return await _fetch_latest_tariff(ENERGINET_GLN, code, day)
 
 
 async def build_price_breakdown(
@@ -210,11 +221,11 @@ async def build_price_breakdown(
     returned values are DKK/kWh."""
     today_date = day or datetime.now(CPH_TZ).date()
     grid_tariff, nettab, system_tariff, transmission_tariff, elafgift = await asyncio.gather(
-        _fetch_latest_tariff(gln, charge_type_code),
-        _fetch_nettab_tariff(area),
-        _fetch_flat_tariff(SYSTEM_TARIFF_CODE),
-        _fetch_flat_tariff(TRANSMISSION_TARIFF_CODE),
-        _fetch_flat_tariff(ELAFGIFT_CODE),
+        _fetch_latest_tariff(gln, charge_type_code, today_date),
+        _fetch_nettab_tariff(area, today_date),
+        _fetch_flat_tariff(SYSTEM_TARIFF_CODE, today_date),
+        _fetch_flat_tariff(TRANSMISSION_TARIFF_CODE, today_date),
+        _fetch_flat_tariff(ELAFGIFT_CODE, today_date),
     )
 
     start_utc = datetime.combine(today_date, dtime.min, tzinfo=CPH_TZ).astimezone(UTC)
