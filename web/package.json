@@ -21,7 +21,7 @@
     "@types/react-dom": "^19.3.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@next/eslint-plugin-next": "^16.4.3",
-    "eslint": "^10.13.0",
+    "eslint": "^10.14.0",
     "globals": "^17.13.0",
     "typescript-eslint": "^8.72.1",
     "typescript": "^6.0.3"
