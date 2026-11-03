@@ -316,10 +316,14 @@ async def backfill_production_forecasts(days: int = 365) -> int:
             },
         )
         # Reject out-of-range/foreign records rather than importing unrelated values.
+        # Empty responses must not occupy immutable historical keys: a later
+        # attempt may receive the previously unavailable forecast.
         rows = [
             row
             for row in _parse_day_ahead_records(records)
-            if start <= row["ts"] < chunk_end and row["area"] in settings.area_codes
+            if start <= row["ts"] < chunk_end
+            and row["area"] in settings.area_codes
+            and (row["wind_mw"] is not None or row["solar_mw"] is not None)
         ]
         if rows:
             async with get_session() as session:

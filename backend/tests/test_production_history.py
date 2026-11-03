@@ -193,6 +193,41 @@ async def test_forecast_backfill_rejects_unbounded_history(days):
         await production.backfill_production_forecasts(days=days)
 
 
+async def test_empty_backfill_can_recover_without_rewriting_history(database, test_settings):
+    records = [
+        {"HourUTC": "2026-04-01T12:00:00", "PriceArea": "DK1", "ForecastType": kind}
+        for kind in ["Onshore Wind", "Solar"]
+    ]
+    responses = [
+        [{**r, "ForecastDayAhead": None} for r in records],
+        [
+            {**r, "ForecastDayAhead": 0 if r["ForecastType"] == "Onshore Wind" else None}
+            for r in records
+        ],
+        [{**r, "ForecastDayAhead": 999} for r in records],
+    ]
+    with (
+        time_machine.travel("2026-04-02 10:00Z", tick=False),
+        patch.object(production, "get_settings", return_value=test_settings),
+        patch.object(production, "eds_get", AsyncMock(side_effect=responses)),
+    ):
+        assert await production.backfill_production_forecasts(days=1) == 0
+        async with database.connect() as conn:
+            assert (
+                await conn.execute(text("SELECT COUNT(*) FROM production_forecasts"))
+            ).scalar_one() == 0
+        await production.backfill_production_forecasts(days=1)
+        async with database.connect() as conn:
+            original = (await conn.execute(text("SELECT * FROM production_forecasts"))).all()
+        await production.backfill_production_forecasts(days=1)
+    async with database.connect() as conn:
+        final = (await conn.execute(text("SELECT * FROM production_forecasts"))).all()
+    assert len(final) == 1
+    assert final == original
+    assert final[0].wind_mw == 0
+    assert final[0].solar_mw is None
+
+
 def training_frame(wind=np.nan, solar=np.nan):
     frame = pd.DataFrame(
         {TARGET: 0.5, "wind_mw": wind, "solar_mw": solar, "horizon_step": 1},
