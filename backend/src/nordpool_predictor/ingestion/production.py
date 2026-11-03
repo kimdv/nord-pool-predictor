@@ -64,6 +64,26 @@ def _latest_forecast_value(rec: dict[str, Any]) -> float | None:
     return None
 
 
+def _component_values(components: dict, fallback: datetime) -> dict[str, Any]:
+    values = {}
+    for kind, field in [("wind", "wind_mw"), ("solar", "solar_mw")]:
+        present = [
+            part["value"]
+            for name, part in components.items()
+            if kind in name and part["value"] is not None
+        ]
+        values[field] = sum(present) if present else None
+    values["oldest_component_issued_at"] = min(
+        (
+            datetime.fromisoformat(part["issued_at"])
+            for part in components.values()
+            if part["value"] is not None
+        ),
+        default=fallback,
+    )
+    return values
+
+
 def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, datetime], dict[datetime, dict[str, float | None]]] = {}
     for rec in records:
@@ -90,23 +110,13 @@ def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any
                 "area": area,
                 "ts": ts,
                 "issued_at": issued_at,
-                "oldest_component_issued_at": min(
-                    (stamp for value, stamp in components.values() if value is not None),
-                    default=issued_at,
-                ),
                 "source": SOURCE_FORECAST,
                 "components_json": {
                     name: {"value": value, "issued_at": stamp.isoformat()}
                     for name, (value, stamp) in components.items()
                 },
             }
-            for kind, field in [("wind", "wind_mw"), ("solar", "solar_mw")]:
-                values = [
-                    value
-                    for name, (value, _) in components.items()
-                    if kind in name and value is not None
-                ]
-                row[field] = sum(values) if values else None
+            row.update(_component_values(row["components_json"], issued_at))
             rows.append(row)
     return rows
 
@@ -175,23 +185,9 @@ async def _upsert_forecasts(rows: list[dict[str, Any]]) -> int:
                 "ts": ts,
                 "source": SOURCE_FORECAST,
                 "issued_at": available_at,
-                "oldest_component_issued_at": min(
-                    (
-                        datetime.fromisoformat(part["issued_at"])
-                        for part in components.values()
-                        if part["value"] is not None
-                    ),
-                    default=available_at,
-                ),
                 "components_json": json.dumps(components),
             }
-            for kind, field in [("wind", "wind_mw"), ("solar", "solar_mw")]:
-                values = [
-                    part["value"]
-                    for name, part in components.items()
-                    if kind in name and part["value"] is not None
-                ]
-                snapshot[field] = sum(values) if values else None
+            snapshot.update(_component_values(components, available_at))
             await session.execute(stmt, snapshot)
             count += 1
         await session.commit()

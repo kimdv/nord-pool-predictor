@@ -16,6 +16,15 @@ from nordpool_predictor.scheduler import bootstrap
 from nordpool_predictor.scheduler.queue import enqueue_job
 
 
+@pytest.fixture
+async def readiness_client(test_settings):
+    app = FastAPI()
+    app.include_router(health.router)
+    with patch.object(health, "get_settings", return_value=test_settings):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            yield client
+
+
 @pytest.mark.parametrize("status", ["completed", "failed"])
 async def test_bootstrap_completion_remains_in_job_summary(database, status):
     from nordpool_predictor.api.routers.jobs import jobs_summary
@@ -159,7 +168,9 @@ async def seed_fresh_forecasts(database, areas):
             )
 
 
-async def test_recent_failed_forecasts_do_not_hide_stale_successes(database, test_settings):
+async def test_recent_failed_forecasts_do_not_hide_stale_successes(
+    database, test_settings, readiness_client
+):
     test_settings._areas = {"DK1": test_settings.areas["DK1"]}
     await seed_fresh_sources(database, test_settings)
     async with database.begin() as conn:
@@ -177,11 +188,8 @@ async def test_recent_failed_forecasts_do_not_hide_stale_successes(database, tes
             WHERE status = 'completed'
         """)
         )
-    app = FastAPI()
-    app.include_router(health.router)
-    with patch.object(health, "get_settings", return_value=test_settings):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get("/api/health/ready")
+    client = readiness_client
+    response = await client.get("/api/health/ready")
     assert response.status_code == 503
     body = response.json()
     assert all(not source["is_stale"] for source in body["sources"])
@@ -192,7 +200,7 @@ async def test_recent_failed_forecasts_do_not_hide_stale_successes(database, tes
 
 
 async def test_ready_requires_success_for_every_area_and_completed_bootstrap(
-    database, test_settings
+    database, test_settings, readiness_client
 ):
     await seed_fresh_sources(database, test_settings)
     async with database.begin() as conn:
@@ -208,44 +216,41 @@ async def test_ready_requires_success_for_every_area_and_completed_bootstrap(
             SELECT run_id, NOW() + interval '1 hour', 1, 0.5 FROM forecast_runs
         """)
         )
-    app = FastAPI()
-    app.include_router(health.router)
-    with patch.object(health, "get_settings", return_value=test_settings):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            # A successful DK1 run must not hide DK2's missing run.
-            response = await client.get("/api/health/ready")
-            assert response.status_code == 503
-            assert response.json()["last_forecast_at"] is None
-            async with database.begin() as conn:
-                await conn.execute(
-                    text("""
-                    INSERT INTO forecast_runs
-                        (area, model_version, issued_at, horizon_steps, status)
-                    VALUES ('DK2', 'test', NOW(), 672, 'scored')
-                """)
-                )
-                await conn.execute(
-                    text("""
-                    INSERT INTO forecast_values (run_id, ts, horizon_step, predicted_price_dkk_kwh)
-                    SELECT run_id, NOW() - interval '1 hour', 1, 0.5 FROM forecast_runs
-                    WHERE area = 'DK2'
-                """)
-                )
-            # A successful run with only past values is still unavailable.
-            assert (await client.get("/api/health/ready")).status_code == 503
-            async with database.begin() as conn:
-                await conn.execute(
-                    text("""
-                    UPDATE forecast_values SET ts = NOW() + interval '1 hour'
-                    WHERE run_id IN (SELECT run_id FROM forecast_runs WHERE area = 'DK2')
-                """)
-                )
-            assert (await client.get("/api/health/ready")).status_code == 200
-            await enqueue_job("bootstrap")
-            assert (await client.get("/api/health/ready")).status_code == 503
-            async with database.begin() as conn:
-                await conn.execute(text("UPDATE job_requests SET status = 'completed'"))
-            assert (await client.get("/api/health/ready")).status_code == 200
+    client = readiness_client
+    # A successful DK1 run must not hide DK2's missing run.
+    response = await client.get("/api/health/ready")
+    assert response.status_code == 503
+    assert response.json()["last_forecast_at"] is None
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO forecast_runs
+                (area, model_version, issued_at, horizon_steps, status)
+            VALUES ('DK2', 'test', NOW(), 672, 'scored')
+        """)
+        )
+        await conn.execute(
+            text("""
+            INSERT INTO forecast_values (run_id, ts, horizon_step, predicted_price_dkk_kwh)
+            SELECT run_id, NOW() - interval '1 hour', 1, 0.5 FROM forecast_runs
+            WHERE area = 'DK2'
+        """)
+        )
+    # A successful run with only past values is still unavailable.
+    assert (await client.get("/api/health/ready")).status_code == 503
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            UPDATE forecast_values SET ts = NOW() + interval '1 hour'
+            WHERE run_id IN (SELECT run_id FROM forecast_runs WHERE area = 'DK2')
+        """)
+        )
+    assert (await client.get("/api/health/ready")).status_code == 200
+    await enqueue_job("bootstrap")
+    assert (await client.get("/api/health/ready")).status_code == 503
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE job_requests SET status = 'completed'"))
+    assert (await client.get("/api/health/ready")).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -262,39 +267,22 @@ async def test_ready_requires_success_for_every_area_and_completed_bootstrap(
 )
 @pytest.mark.parametrize("failure", ["missing", "historical"])
 async def test_readiness_checks_each_input_by_data_time(
-    database, test_settings, table, owner_column, owner, source, failure
+    database, test_settings, table, owner_column, owner, source, failure, readiness_client
 ):
     test_settings.areas["DK2"].weather_points.append(WeatherPoint("DK2_EXTRA", "Extra", 55, 12))
     await seed_fresh_sources(database, test_settings)
+    await seed_fresh_forecasts(database, test_settings.area_codes)
+    client = readiness_client
+    assert (await client.get("/api/health/ready")).status_code == 200
     async with database.begin() as conn:
-        await conn.execute(
-            text("""
-            INSERT INTO forecast_runs (area, model_version, issued_at, horizon_steps, status)
-            VALUES ('DK1', 'test', NOW(), 672, 'completed'),
-                   ('DK2', 'test', NOW(), 672, 'completed')
-        """)
-        )
-        await conn.execute(
-            text("""
-            INSERT INTO forecast_values (run_id, ts, horizon_step, predicted_price_dkk_kwh)
-            SELECT run_id, NOW() + interval '1 hour', 1, 0.5 FROM forecast_runs
-        """)
-        )
-    app = FastAPI()
-    app.include_router(health.router)
-    with patch.object(health, "get_settings", return_value=test_settings):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            assert (await client.get("/api/health/ready")).status_code == 200
-            async with database.begin() as conn:
-                if failure == "missing":
-                    statement = f"DELETE FROM {table} WHERE {owner_column} = :owner"
-                else:
-                    statement = (
-                        f"UPDATE {table} SET ts = ts - interval '3 days' "
-                        f"WHERE {owner_column} = :owner"
-                    )
-                await conn.execute(text(statement), {"owner": owner})
-            response = await client.get("/api/health/ready")
+        if failure == "missing":
+            statement = f"DELETE FROM {table} WHERE {owner_column} = :owner"
+        else:
+            statement = (
+                f"UPDATE {table} SET ts = ts - interval '3 days' WHERE {owner_column} = :owner"
+            )
+        await conn.execute(text(statement), {"owner": owner})
+    response = await client.get("/api/health/ready")
     assert response.status_code == 503
     sources = {item["source"]: item for item in response.json()["sources"]}
     assert sources[source]["is_stale"]
