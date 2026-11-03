@@ -9,12 +9,33 @@ on:
 jobs:
   build-images:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d testdb"
+          --health-interval 5s --health-timeout 5s --health-retries 10
 
     steps:
       - uses: actions/checkout@v7
 
       - name: Build backend image
         run: docker build -t nordpool-predictor-app:ci ./backend
+
+      - name: Load synchronous driver without a database
+        run: docker run --rm nordpool-predictor-app:ci python scripts/check_database.py
+
+      - name: Check sync and async connections against PostgreSQL 18
+        run: >-
+          docker run --rm --network host
+          -e DATABASE_URL=postgresql+asyncpg://test:test@localhost:5432/testdb
+          nordpool-predictor-app:ci python scripts/check_database.py --connect
 
       - name: Build web image
         run: docker build -t nordpool-predictor-web:ci ./web

@@ -160,6 +160,10 @@ Replace `<your-host>` with the IP or hostname of the machine running the Docker 
 
 ## Deployment
 
+For an existing NAS installation recovering from failed training/forecast jobs,
+follow [the NAS recovery guide](docs/nas-recovery.md). Current deployments require
+one background worker sharing the API's backend image digest and model storage.
+
 ### Standalone (recommended)
 
 Use the provided `docker-compose.yml` which defines four services: `postgres`, `app`, `worker`, and `web` on isolated Docker networks.

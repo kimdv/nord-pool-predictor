@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
+from sqlalchemy.engine import make_url
 
 
 class WeatherPoint:
@@ -100,7 +101,11 @@ class Settings(BaseSettings):
 
     @property
     def sync_database_url(self) -> str:
-        return self.database_url.replace("+asyncpg", "")
+        url = make_url(self.database_url)
+        if url.drivername in {"postgresql", "postgresql+asyncpg"}:
+            # SQLAlchemy 2.1 defaults to psycopg 3; this project installs psycopg2.
+            url = url.set(drivername="postgresql+psycopg2")
+        return url.render_as_string(hide_password=False)
 
 
 @lru_cache
