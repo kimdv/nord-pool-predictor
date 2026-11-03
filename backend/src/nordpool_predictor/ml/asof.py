@@ -75,6 +75,12 @@ def load_asof_covariates(
         raise ValueError(f"Unknown covariate kind: {kind}")
 
     # All identifiers above are internal constants. Issuance and target times are bound data.
+    source_filter = (
+        "AND f.source <> 'energidataservice_forecast' "
+        "AND (f.source <> 'energidataservice_forecast_v2' OR f.components_json IS NOT NULL)"
+        if kind == "production"
+        else ""
+    )
     query = text(f"""
         WITH targets AS (
             SELECT * FROM jsonb_to_recordset(CAST(:targets AS jsonb))
@@ -87,7 +93,7 @@ def load_asof_covariates(
             WHERE f.{owner} = o.id
               AND f.ts = date_trunc('hour', t.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
               AND f.issued_at <= t.issued_at
-              {"AND f.source <> 'energidataservice_forecast'" if kind == "production" else ""}
+              {source_filter}
             ORDER BY f.issued_at DESC LIMIT 1
         ) snapshot ON TRUE
         GROUP BY t.ts ORDER BY t.ts

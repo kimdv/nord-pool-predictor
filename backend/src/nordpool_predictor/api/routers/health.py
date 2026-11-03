@@ -49,6 +49,7 @@ _SOURCE_QUERIES: dict[str, str] = {
                 FROM production_forecasts
                 WHERE area = owner AND ts = :target_hour AND issued_at <= :now
                   AND source <> 'energidataservice_forecast'
+                  AND (source <> 'energidataservice_forecast_v2' OR components_json IS NOT NULL)
                 ORDER BY issued_at DESC LIMIT 1) AS last_updated
         FROM unnest(CAST(:owners AS text[])) AS expected(owner)
     """,

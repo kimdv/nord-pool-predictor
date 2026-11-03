@@ -36,6 +36,43 @@ async def test_bootstrap_completion_remains_in_job_summary(database, status):
     assert second["bootstrap"] == first["bootstrap"]
 
 
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        ("completed", "completed"),
+        ("pending", "running"),
+        ("running", "running"),
+        ("failed", "failed"),
+    ],
+)
+async def test_bootstrap_summary_uses_only_latest_attempt(database, status, expected):
+    from nordpool_predictor.api.routers.jobs import jobs_summary
+
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO job_requests (job_name, status, created_at, started_at, finished_at)
+            VALUES ('bootstrap', 'failed', NOW() - interval '2 minutes',
+                    NOW() - interval '2 minutes', NOW() - interval '1 minute'),
+                   ('bootstrap', :status, NOW(), NULL, NULL)
+        """),
+            {"status": status},
+        )
+        await conn.execute(
+            text("""
+            INSERT INTO job_runs (job_type, status, started_at, finished_at)
+            VALUES ('refresh_forecast', 'failed', NOW() - interval '2 minutes', NOW()),
+                   ('refresh_forecast', 'completed', NOW(), NOW())
+        """)
+        )
+    rows = {row.job_type: row for row in await jobs_summary()}
+    assert rows["bootstrap"].last_status == expected
+    assert rows["bootstrap"].batch_size == 1
+    assert rows["bootstrap"].failures_in_batch == (1 if status == "failed" else 0)
+    assert rows["refresh_forecast"].batch_size == 2
+    assert rows["refresh_forecast"].last_status == "failed"
+
+
 async def seed_fresh_sources(database, settings):
     async with database.begin() as conn:
         for area in settings.area_codes:

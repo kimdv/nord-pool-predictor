@@ -145,6 +145,8 @@ async def get_latest_forecast(area: str) -> ForecastRunResponse:
                         FROM production_forecasts
                         WHERE area = :area AND issued_at <= :cutoff
                           AND source <> 'energidataservice_forecast'
+                          AND (source <> 'energidataservice_forecast_v2'
+                               OR components_json IS NOT NULL)
                         ORDER BY ts, issued_at DESC
                     ) snapshots
                     WHERE wind_mw IS NOT NULL OR solar_mw IS NOT NULL

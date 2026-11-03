@@ -199,6 +199,10 @@ class TestProductionForecastParsing:
                 "wind_mw": 30.0,
                 "solar_mw": 5.0,
                 "source": "energidataservice_forecast_v2",
+                "components_json": {
+                    name: {"value": value, "issued_at": "2026-05-11T20:00:00+00:00"}
+                    for name, value in [("offshore wind", 10), ("onshore wind", 20), ("solar", 5)]
+                },
             }
         ]
 
@@ -321,12 +325,22 @@ def test_missing_optional_component_does_not_age_usable_forecast():
     assert rows[-1]["oldest_component_issued_at"] == datetime(2026, 5, 11, 20, tzinfo=UTC)
 
 
-async def test_repeated_ingestion_keeps_historical_snapshots(database, test_settings):
+@pytest.mark.parametrize(
+    "revision", ["partial", "late", "same_stamp", "stale", "unchanged", "future", "null"]
+)
+async def test_repeated_ingestion_keeps_historical_snapshots(
+    database, sync_database, test_settings, revision
+):
+    import pandas as pd
+    import time_machine
     from sqlalchemy import text
 
     from nordpool_predictor.ingestion import production
+    from nordpool_predictor.ml.asof import load_asof_covariates
 
-    target = datetime(2026, 5, 11, 21, tzinfo=UTC)
+    target = datetime(2026, 5, 11, 14, tzinfo=UTC)
+    first_seen = target.replace(hour=12)
+    second_seen = target.replace(hour=13)
 
     def record(kind, hour, value):
         return {
@@ -337,17 +351,25 @@ async def test_repeated_ingestion_keeps_historical_snapshots(database, test_sett
             "ForecastCurrent": value,
         }
 
-    first = [record("Solar", 19, 9), record("Offshore Wind", 20, 5), record("Onshore Wind", 20, 2)]
-    second = [
-        record("Solar", 19, 9),
-        record("Offshore Wind", 20, 5),
-        record("Onshore Wind", 21, 3),
-    ]
+    first = [record("Offshore Wind", 10, 5), record("Onshore Wind", 11, 2)]
+    if revision != "late":
+        first.append(record("Solar", 10, 9))
+    responses = {
+        "partial": [record("Onshore Wind", 11, 3)],
+        "late": [record("Solar", 10, 9)],
+        "same_stamp": [record("Solar", 10, 12)],
+        "stale": [record("Onshore Wind", 9, 99)],
+        "unchanged": first,
+        "future": [record("Onshore Wind", 15, 99)],
+        "null": [record("Onshore Wind", 11, None)],
+    }
     with (
+        time_machine.travel(first_seen, tick=False) as clock,
         patch.object(production, "get_settings", return_value=test_settings),
-        patch.object(production, "eds_get", AsyncMock(side_effect=[first, second])),
+        patch.object(production, "eds_get", AsyncMock(side_effect=[first, responses[revision]])),
     ):
         await production.ingest_production_forecasts()
+        clock.move_to(second_seen)
         await production.ingest_production_forecasts()
     async with database.connect() as conn:
         rows = (
@@ -357,11 +379,32 @@ async def test_repeated_ingestion_keeps_historical_snapshots(database, test_sett
         """)
             )
         ).all()
-    assert [(row.issued_at.hour, row.wind_mw, row.solar_mw) for row in rows] == [
-        (19, None, 9),
-        (20, 7, 9),
-        (21, 8, 9),
-    ]
+    assert tuple(rows[0]) == (first_seen, 7, None if revision == "late" else 9)
+    if revision in {"stale", "unchanged", "future"}:
+        assert len(rows) == 1
+    else:
+        assert len(rows) == 2
+        assert tuple(rows[1]) == (
+            second_seen,
+            {"partial": 8, "null": 5}.get(revision, 7),
+            12 if revision == "same_stamp" else 9,
+        )
+    for cutoff, expected in [
+        (first_seen - timedelta(seconds=1), None),
+        (first_seen, 7),
+        (second_seen, {"partial": 8, "null": 5}.get(revision, 7)),
+    ]:
+        values = load_asof_covariates(
+            sync_database,
+            pd.DataFrame(index=pd.DatetimeIndex([target])),
+            "DK1",
+            cutoff,
+            "production",
+        )
+        if expected is None:
+            assert pd.isna(values["wind_mw"].iloc[0])
+        else:
+            assert values["wind_mw"].iloc[0] == expected
 
 
 async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
@@ -385,6 +428,20 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
         """),
             {"ts": target, "issued": now},
         )
+        await conn.execute(
+            text("""
+            INSERT INTO production_forecasts
+                (area, ts, issued_at, wind_mw, source, oldest_component_issued_at)
+            VALUES ('DK2', :ts, :issued, 88, 'energidataservice_forecast_v2', :issued)
+        """),
+            {"ts": target, "issued": now},
+        )
+    # Pre-009 v2 aggregates lack component state and must not seed prediction.
+    before = load_asof_covariates(
+        sync_database, pd.DataFrame(index=pd.DatetimeIndex([target])), "DK2", now, "production"
+    )
+    assert pd.isna(before["wind_mw"].iloc[0])
+    assert _query_production_fc(sync_database, "DK2", target, target).empty
     records = [
         {
             "PriceArea": area,
@@ -403,6 +460,7 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
         patch.object(production, "eds_get", AsyncMock(return_value=records)),
     ):
         await production.ingest_production_forecasts()
+    observed_at = datetime.now(UTC)
     async with database.begin() as conn:
         await conn.execute(
             text("""
@@ -419,18 +477,18 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
             await conn.execute(
                 text("""
             SELECT area, issued_at FROM production_forecasts
-            WHERE source = 'energidataservice_forecast_v2' ORDER BY area, ts
+            WHERE source = 'energidataservice_forecast_v2' AND components_json IS NOT NULL
+            ORDER BY area, ts
         """)
             )
         ).all()
-    assert [row.issued_at for row in rows] == [
-        now,
-        now - timedelta(hours=1),
-        now - timedelta(days=3),
-        now - timedelta(days=3),
-    ]
+    assert all(now <= row.issued_at <= observed_at for row in rows)
     values = load_asof_covariates(
-        sync_database, pd.DataFrame(index=pd.DatetimeIndex([target])), "DK2", now, "production"
+        sync_database,
+        pd.DataFrame(index=pd.DatetimeIndex([target])),
+        "DK2",
+        observed_at,
+        "production",
     )
     assert values["wind_mw"].iloc[0] == 7
     assert _query_production_fc(sync_database, "DK2", target, target)["wind_mw"].iloc[0] == 7
@@ -449,7 +507,7 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
             INSERT INTO forecast_runs (area, model_version, issued_at, horizon_steps, status)
             VALUES ('DK1', 'test', :issued, 8, 'completed')
         """),
-            {"issued": now},
+            {"issued": observed_at},
         )
         await conn.execute(
             text("""
@@ -467,6 +525,47 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
     with patch.object(forecasts, "get_settings", return_value=test_settings):
         response = await forecasts.get_latest_forecast("DK1")
     assert response.production_forecast_horizon == target + timedelta(hours=1)
+
+
+async def test_concurrent_component_updates_are_merged(database):
+    import asyncio
+
+    from sqlalchemy import text
+
+    from nordpool_predictor.ingestion import production
+
+    now = datetime.now(UTC)
+
+    def records(kind, value):
+        return production._parse_forecast_records(
+            [
+                {
+                    "HourUTC": now.replace(minute=0, second=0, microsecond=0).isoformat(),
+                    "PriceArea": "DK1",
+                    "TimestampUTC": (now - timedelta(hours=1)).isoformat(),
+                    "ForecastType": kind,
+                    "ForecastCurrent": value,
+                }
+            ]
+        )
+
+    await production._upsert_forecasts(records("Solar", 9))
+    await asyncio.gather(
+        production._upsert_forecasts(records("Onshore Wind", 2)),
+        production._upsert_forecasts(records("Offshore Wind", 5)),
+    )
+    async with database.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("""
+            SELECT wind_mw, solar_mw, components_json FROM production_forecasts ORDER BY issued_at
+        """)
+            )
+        ).all()
+    assert len(rows) == 3
+    assert tuple(rows[0])[:2] == (None, 9)
+    assert tuple(rows[-1])[:2] == (7, 9)
+    assert set(rows[-1].components_json) == {"solar", "onshore wind", "offshore wind"}
 
 
 async def test_actual_ingestion_repairs_previously_fabricated_zeroes(database, test_settings):

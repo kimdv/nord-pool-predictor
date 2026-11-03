@@ -372,6 +372,7 @@ def _query_production_fc(
         "SELECT DISTINCT ON (ts) ts, wind_mw, solar_mw "
         "FROM production_forecasts "
         "WHERE source <> 'energidataservice_forecast' "
+        "AND (source <> 'energidataservice_forecast_v2' OR components_json IS NOT NULL) "
         "AND area = :area AND ts >= :ts_min AND ts <= :ts_max "
         "ORDER BY ts, issued_at DESC"
     )

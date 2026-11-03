@@ -387,8 +387,12 @@ snapshots under `energidataservice_forecast_v2`. Missing source timestamps are n
 replaced with fetch time. Production observations preserve missing values and genuine
 zeroes; reingestion corrects previously stored observations.
 Updates carry forward the components already known for that hour. A snapshot becomes
-available at its latest component update; readiness uses its oldest component timestamp
+available when its component updates are observed; readiness uses its oldest source timestamp
 so fresh wind data cannot mask stale solar data (or vice versa).
+Snapshot-local component state carries missing response fields forward and lets late
+arrivals or same-timestamp revisions append a new snapshot without changing historical
+inputs. Unchanged, stale, and future-dated updates do not advance availability.
+Snapshots without component state are refetched rather than used for prediction or readiness.
 
 `GET /api/health/live` checks process responsiveness without database queries.
 `GET /api/health/ready` returns HTTP 503 when the database fails, bootstrap is

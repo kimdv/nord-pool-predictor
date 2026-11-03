@@ -93,6 +93,10 @@ def _parse_forecast_records(records: list[dict[str, Any]]) -> list[dict[str, Any
                     default=issued_at,
                 ),
                 "source": SOURCE_FORECAST,
+                "components_json": {
+                    name: {"value": value, "issued_at": stamp.isoformat()}
+                    for name, (value, stamp) in components.items()
+                },
             }
             for kind, field in [("wind", "wind_mw"), ("solar", "solar_mw")]:
                 values = [
@@ -125,17 +129,71 @@ async def _upsert_forecasts(rows: list[dict[str, Any]]) -> int:
         return 0
     stmt = text("""
         INSERT INTO production_forecasts
-            (area, issued_at, ts, wind_mw, solar_mw, source, oldest_component_issued_at)
-        VALUES (:area, :issued_at, :ts, :wind_mw, :solar_mw, :source, :oldest_component_issued_at)
-        ON CONFLICT (area, issued_at, ts, source) DO UPDATE SET
-            wind_mw = EXCLUDED.wind_mw, solar_mw = EXCLUDED.solar_mw,
-            oldest_component_issued_at = EXCLUDED.oldest_component_issued_at
-        WHERE production_forecasts.oldest_component_issued_at IS NULL
+            (area, issued_at, ts, wind_mw, solar_mw, source, oldest_component_issued_at,
+             components_json)
+        VALUES (:area, :issued_at, :ts, :wind_mw, :solar_mw, :source, :oldest_component_issued_at,
+                CAST(:components_json AS jsonb))
     """)
+    grouped: dict[tuple[str, datetime], list[dict]] = {}
+    for row in rows:
+        grouped.setdefault((row["area"], row["ts"]), []).append(row)
+    count = 0
     async with get_session() as session:
-        await session.execute(stmt, rows)
+        # Serialize read/merge/append across ingestion workers. Existing snapshots
+        # are immutable; late arrivals become available only when observed.
+        await session.execute(text("SELECT pg_advisory_xact_lock(73640103)"))
+        for (area, ts), updates in sorted(grouped.items()):
+            result = await session.execute(
+                text("""
+                SELECT issued_at, components_json FROM production_forecasts
+                WHERE area = :area AND ts = :ts AND source = :source
+                  AND components_json IS NOT NULL
+                ORDER BY issued_at DESC LIMIT 1
+                """),
+                {"area": area, "ts": ts, "source": SOURCE_FORECAST},
+            )
+            previous = result.mappings().first()
+            components = dict(previous["components_json"]) if previous else {}
+            now = datetime.now(UTC)
+            for update in sorted(updates, key=lambda row: row["issued_at"]):
+                for kind, component in update["components_json"].items():
+                    stamp = datetime.fromisoformat(component["issued_at"])
+                    before = components.get(kind)
+                    if stamp <= now and (
+                        before is None or stamp >= datetime.fromisoformat(before["issued_at"])
+                    ):
+                        components[kind] = component
+            if not components or (previous and components == previous["components_json"]):
+                continue
+            available_at = (
+                max(now, previous["issued_at"] + timedelta(microseconds=1)) if previous else now
+            )
+            snapshot = {
+                "area": area,
+                "ts": ts,
+                "source": SOURCE_FORECAST,
+                "issued_at": available_at,
+                "oldest_component_issued_at": min(
+                    (
+                        datetime.fromisoformat(part["issued_at"])
+                        for part in components.values()
+                        if part["value"] is not None
+                    ),
+                    default=available_at,
+                ),
+                "components_json": json.dumps(components),
+            }
+            for kind, field in [("wind", "wind_mw"), ("solar", "solar_mw")]:
+                values = [
+                    part["value"]
+                    for name, part in components.items()
+                    if kind in name and part["value"] is not None
+                ]
+                snapshot[field] = sum(values) if values else None
+            await session.execute(stmt, snapshot)
+            count += 1
         await session.commit()
-    return len(rows)
+    return count
 
 
 async def ingest_production_actuals(days: int = 7) -> None:
