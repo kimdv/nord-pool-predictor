@@ -41,16 +41,13 @@ export default function AreaSwitcher({
   onSelect: (code: AreaCode) => void;
 }) {
   return (
-    <div className="inline-flex rounded-lg bg-gray-100 p-1 gap-0.5">
+    <div className="area-switcher" role="group" aria-label="Prisområde">
       {AREAS.map((a) => (
         <button
           key={a.code}
           onClick={() => onSelect(a.code)}
-          className={`px-3.5 py-1.5 rounded-md text-sm font-medium transition-all ${
-            selected === a.code
-              ? "bg-white text-gray-900 shadow-sm"
-              : "text-gray-500 hover:text-gray-700"
-          }`}
+          aria-pressed={selected === a.code}
+          className={selected === a.code ? "area-option is-selected" : "area-option"}
         >
           {a.label} ({a.code})
         </button>

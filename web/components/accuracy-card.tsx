@@ -33,7 +33,7 @@ export default function AccuracyCard({ records }: { records: AccuracyRecord[] })
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-100">
+            <tr className="text-left text-xs text-gray-400 border-b border-gray-100">
               <th className="pb-3 pr-4 font-medium">Udgivet</th>
               <th className="pb-3 pr-4 text-right font-medium">MAE</th>
               <th className="pb-3 pr-4 text-right font-medium">RMSE</th>
@@ -52,13 +52,13 @@ export default function AccuracyCard({ records }: { records: AccuracyRecord[] })
                     minute: "2-digit",
                   })}
                 </td>
-                <td className="py-3 pr-4 text-right font-mono text-gray-700">
+                <td className="py-3 pr-4 text-right tabular-nums text-gray-700">
                   {fmtNum(r.mae_24h)}
                 </td>
-                <td className="py-3 pr-4 text-right font-mono text-gray-700">
+                <td className="py-3 pr-4 text-right tabular-nums text-gray-700">
                   {fmtNum(r.rmse_24h)}
                 </td>
-                <td className="py-3 pr-4 text-right font-mono text-gray-700">
+                <td className="py-3 pr-4 text-right tabular-nums text-gray-700">
                   {r.bias_24h != null
                     ? `${r.bias_24h >= 0 ? "+" : ""}${r.bias_24h.toFixed(4)}`
                     : "—"}

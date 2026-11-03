@@ -27,11 +27,11 @@ export default function PriceChart({
   data: CombinedPoint[];
   productionHorizon?: string | null;
 }) {
-  const [showUncertainty, setShowUncertainty] = useState(false);
+  const [showUncertainty, setShowUncertainty] = useState(true);
 
   if (!data.length) {
     return (
-      <div className="card p-6">
+      <div className="forecast-chart">
         <h2 className="text-lg font-semibold text-gray-900 mb-2">
           Prisprognose
         </h2>
@@ -73,9 +73,9 @@ export default function PriceChart({
   }
 
   return (
-    <div className="card p-6">
+    <div className="forecast-chart">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
-        <h2 className="text-lg font-semibold text-gray-900">Prisprognose</h2>
+        <div><h2 className="text-lg font-semibold text-gray-900">De næste 7 dage</h2><p className="chart-description">Kendte spotpriser og forventet prisudvikling</p></div>
         <label className="inline-flex items-center gap-2 cursor-pointer select-none">
           <span
             aria-hidden
@@ -108,23 +108,24 @@ export default function PriceChart({
           Prognosen dækker endnu ikke alle de næste 7 dage. Manglende priser vises som huller.
         </p>
       )}
-      <div className="h-80">
+      <div className="forecast-plot">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
             data={data}
             margin={{ top: 5, right: 20, bottom: 5, left: 10 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+            <CartesianGrid vertical={false} stroke="#dfe8ee" />
             <XAxis
               dataKey="ts"
               tickFormatter={(ts: string) => formatCopenhagenDateTime(ts, AXIS_TIME_FORMAT)}
-              tick={{ fill: "#9ca3af", fontSize: 11 }}
-              interval={Math.max(Math.floor(data.length / 12) - 1, 0)}
+              tick={{ fill: "#657c8a", fontSize: 11 }}
+              interval="preserveStartEnd"
+              minTickGap={40}
               axisLine={{ stroke: "#e5e7eb" }}
               tickLine={false}
             />
             <YAxis
-              tick={{ fill: "#9ca3af", fontSize: 11 }}
+              tick={{ fill: "#657c8a", fontSize: 11 }}
               tickFormatter={(v: number) => v.toFixed(2)}
               axisLine={false}
               tickLine={false}
@@ -132,7 +133,7 @@ export default function PriceChart({
                 value: "DKK/kWh",
                 angle: -90,
                 position: "insideLeft",
-                fill: "#9ca3af",
+                fill: "#657c8a",
                 fontSize: 12,
               }}
             />
@@ -170,7 +171,7 @@ export default function PriceChart({
                 label={{
                   value: "Nu",
                   position: "insideTopRight",
-                  fill: "#9ca3af",
+                  fill: "#657c8a",
                   fontSize: 11,
                 }}
               />
@@ -184,7 +185,7 @@ export default function PriceChart({
                 label={{
                   value: "Kendte priser ▸",
                   position: "insideTopRight",
-                  fill: "#9ca3af",
+                  fill: "#657c8a",
                   fontSize: 11,
                 }}
               />
@@ -205,28 +206,31 @@ export default function PriceChart({
             )}
             {showUncertainty && (
               <Area
+                isAnimationActive={false}
                 type="monotone"
                 dataKey="band"
                 name="P10–P90 interval"
                 stroke="none"
-                fill="#059669"
+                fill="#277a70"
                 fillOpacity={0.1}
               />
             )}
             <Line
+              isAnimationActive={false}
               type="monotone"
               dataKey="actual"
               name="Spotpris"
-              stroke="#2563eb"
-              strokeWidth={2}
+              stroke="#174d70"
+              strokeWidth={2.5}
               dot={false}
             />
             <Line
+              isAnimationActive={false}
               type="monotone"
               dataKey="predicted"
               name="Prognose (P50)"
-              stroke="#7c3aed"
-              strokeWidth={2}
+              stroke="#277a70"
+              strokeWidth={2.5}
               strokeDasharray="6 3"
               dot={false}
             />

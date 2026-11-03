@@ -2,22 +2,21 @@ import Link from "next/link";
 
 export default function Navbar() {
   return (
-    <nav className="sticky top-0 z-40 bg-white border-b border-gray-100 shadow-sm">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="flex h-16 items-center justify-between">
-          <Link href="/" className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white font-bold text-sm">
-              NP
-            </div>
-            <span className="text-lg font-semibold text-gray-900">
-              Nord Pool Predictor
-            </span>
-          </Link>
-          <span className="hidden sm:inline text-sm text-gray-400">
-            Elprisprognose for Danmark
-          </span>
+    <header className="site-header">
+      <nav className="site-nav" aria-label="Hovednavigation">
+        <Link href="/" className="brand" aria-label="Nord Pool Predictor, forside">
+          <svg className="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+            <path d="M4 25h7l6-15 7 23 5-15h7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span>Nord Pool <span className="brand-secondary">Predictor</span></span>
+        </Link>
+        <div className="nav-links">
+          <Link href="/#prisoverblik">Prisoverblik</Link>
+          <Link href="/#analyse">Prognoseanalyse</Link>
+          <Link href="/#datakilder">Datakilder</Link>
         </div>
-      </div>
-    </nav>
+        <span className="country-label"><span aria-hidden="true" className="danish-flag" />Danmark</span>
+      </nav>
+    </header>
   );
 }
