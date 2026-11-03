@@ -12,6 +12,7 @@ from sqlalchemy.engine import Engine
 
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.ml.asof import issuance_times, load_asof_covariates
+from nordpool_predictor.ml.horizon import DEFAULT_HORIZON_STEPS
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ def build_feature_matrix(
     if df.empty:
         return df
     rng = np.random.default_rng(horizon_seed)
-    horizons = rng.integers(1, 673, size=len(df), dtype=np.int32)
+    horizons = rng.integers(1, DEFAULT_HORIZON_STEPS + 1, size=len(df), dtype=np.int32)
     cutoffs = pd.Series(df.index - pd.to_timedelta(horizons * 15, unit="min"), index=df.index)
     df = add_issuance_price_features(df, history, cutoffs)
     df = add_weather_features(df, area, issued_at=cutoffs)
@@ -559,7 +560,7 @@ def apply_horizon_features(
     *issuance* time and the *target* timestamp for each row (1-based: step 1
     means 15 minutes ahead).
 
-    The same trained model is used for every horizon from step 1 to step 672.
+    The same trained model is used for every horizon, including the refresh buffer.
     Without a horizon-step signal it can't distinguish "predict 15 minutes
     ahead" from "predict 7 days ahead", and it can't learn that long-horizon
     lags are unreliable.  This function fixes both:

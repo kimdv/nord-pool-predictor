@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { fetchJson, fetchOptionalJson } from "@/lib/client-api";
-import { endOfTomorrowInCopenhagen } from "@/lib/copenhagen-time";
+import { buildCombinedData, priceChartWindow, type CombinedPoint } from "@/lib/combined-price-data";
 import type { AreaCode } from "@/components/area-switcher";
 import type {
   ForecastResponse,
@@ -11,14 +11,7 @@ import type {
   PricesResponse,
 } from "@/lib/api";
 
-export interface CombinedPoint {
-  ts: string;
-  actual?: number;
-  predicted?: number;
-  lower?: number;
-  upper?: number;
-  band?: [number, number];
-}
+export type { CombinedPoint } from "@/lib/combined-price-data";
 
 export interface AreaDetailData {
   combined: CombinedPoint[];
@@ -33,35 +26,6 @@ interface LoadedAreaData extends AreaDetailData {
 }
 
 type AreaDataErrors = Partial<Record<"prices" | "forecast" | "accuracy" | "benchmarks", string>>;
-
-function buildCombinedData(
-  prices: PricesResponse | null,
-  forecast: ForecastResponse | null,
-): CombinedPoint[] {
-  const map = new Map<string, CombinedPoint>();
-
-  if (prices?.prices) {
-    for (const p of prices.prices) {
-      map.set(p.ts, { ts: p.ts, actual: p.price_dkk_kwh });
-    }
-  }
-  if (forecast?.values) {
-    for (const v of forecast.values) {
-      const existing = map.get(v.ts) ?? { ts: v.ts };
-      if (existing.actual == null) {
-        existing.predicted = v.predicted_price_dkk_kwh;
-        existing.lower = v.lower_dkk_kwh;
-        existing.upper = v.upper_dkk_kwh;
-        existing.band = [v.lower_dkk_kwh, v.upper_dkk_kwh];
-      }
-      map.set(v.ts, existing);
-    }
-  }
-
-  return Array.from(map.values()).sort(
-    (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
-  );
-}
 
 export function useAreaData(area: AreaCode, refreshVersion = 0) {
   const [data, setData] = useState<LoadedAreaData | null>(null);
@@ -82,11 +46,11 @@ export function useAreaData(area: AreaCode, refreshVersion = 0) {
     const controller = new AbortController();
     const options = { signal: controller.signal };
 
-    const now = new Date();
-    const start = new Date(now.getTime() - 48 * 3600_000).toISOString();
-    const end = endOfTomorrowInCopenhagen(now);
-
     async function load() {
+      const now = new Date();
+      const window = priceChartWindow(now);
+      const start = new Date(window.start).toISOString();
+      const end = new Date(window.end).toISOString();
       setLoading(true);
       const [prices, forecast, accuracy, benchmarks] = await Promise.allSettled([
         fetchJson<PricesResponse>(
@@ -117,7 +81,7 @@ export function useAreaData(area: AreaCode, refreshVersion = 0) {
         const nextForecast = forecast.status === "fulfilled" ? forecast.value : previous?.forecast ?? null;
         return {
           prices: nextPrices,
-          combined: buildCombinedData(nextPrices, nextForecast),
+          combined: buildCombinedData(nextPrices, nextForecast, now),
           forecast: nextForecast,
           productionHorizon: nextForecast?.production_forecast_horizon ?? null,
           accuracy: accuracy.status === "fulfilled" ? accuracy.value : previous?.accuracy ?? [],
@@ -127,8 +91,14 @@ export function useAreaData(area: AreaCode, refreshVersion = 0) {
       setLoading(false);
     }
 
-    load();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function refresh() {
+      await load();
+      if (!controller.signal.aborted) timer = setTimeout(refresh, 60_000);
+    }
+    refresh();
     return () => {
+      clearTimeout(timer);
       controller.abort();
     };
   }, [area, refreshVersion, retryVersion]);

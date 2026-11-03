@@ -244,7 +244,7 @@ def start_scheduler() -> AsyncIOScheduler:
     _scheduler.add_job(
         enqueue_job,
         args=["refresh_forecast"],
-        trigger=cron(hour=18, minute=5, timezone=tz),
+        trigger=cron(hour="0,6,12,18", minute=5, timezone=tz),
         id="refresh_forecast",
     )
     _scheduler.add_job(

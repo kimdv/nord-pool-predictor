@@ -25,6 +25,7 @@ from nordpool_predictor.ml.features import (
     apply_horizon_features,
     load_prices,
 )
+from nordpool_predictor.ml.horizon import DEFAULT_HORIZON_STEPS
 
 logger = logging.getLogger(__name__)
 PRICE_HISTORY_DAYS = 8
@@ -127,7 +128,7 @@ def _build_forecast_features(
 
 async def run_forecast(
     area: str,
-    horizon_steps: int = 672,
+    horizon_steps: int = DEFAULT_HORIZON_STEPS,
     *,
     issued_at: datetime | None = None,
     model_version: str | None = None,
