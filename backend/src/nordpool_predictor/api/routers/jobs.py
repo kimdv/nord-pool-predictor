@@ -3,10 +3,9 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
-from nordpool_predictor.api.auth import require_admin
 from nordpool_predictor.api.schemas.health import JobRunResponse, JobSummary
 from nordpool_predictor.database import get_session
 from nordpool_predictor.scheduler.queue import JOB_NAMES, enqueue_job
@@ -43,7 +42,7 @@ async def list_jobs(
     ]
 
 
-@router.post("/trigger/{job_name}", status_code=202, dependencies=[Depends(require_admin)])
+@router.post("/trigger/{job_name}", status_code=202)
 async def trigger_job(job_name: str) -> dict[str, str]:
     if job_name not in JOB_NAMES:
         raise HTTPException(status_code=404, detail=f"Unknown job: {job_name}")
