@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -18,15 +20,16 @@ class SlotBreakdown(BaseModel):
     hour: int
     minute: int
     ts: str
-    spot_price: float
+    spot_price: float | None
+    spot_source: Literal["actual", "forecast", "missing"]
     grid_tariff: float
     system_tariff: float
     transmission_tariff: float
     grid_loss_tariff: float
     electricity_tax: float
-    total_ex_vat: float
-    vat: float
-    total_incl_vat: float
+    total_ex_vat: float | None
+    vat: float | None
+    total_incl_vat: float | None
 
 
 class PriceBreakdownResponse(BaseModel):
