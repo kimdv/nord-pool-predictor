@@ -61,6 +61,12 @@ _SOURCE_QUERIES: dict[str, str] = {
 }
 
 
+def _oldest_required_timestamp(timestamps: list[datetime | None]) -> datetime | None:
+    if not timestamps or any(stamp is None for stamp in timestamps):
+        return None
+    return min(stamp for stamp in timestamps if stamp is not None)
+
+
 @router.get("", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     sources: list[SourceFreshness] = []
@@ -105,11 +111,7 @@ async def health_check() -> HealthResponse:
                     {"owners": owners[source_name], "now": now, "target_hour": target_hour},
                 )
                 timestamps = [row["last_updated"] for row in result.mappings().all()]
-                last_updated = (
-                    min(timestamps)
-                    if timestamps and all(ts is not None for ts in timestamps)
-                    else None
-                )
+                last_updated = _oldest_required_timestamp(timestamps)
 
                 threshold = _STALENESS_THRESHOLDS[source_name]
                 is_stale = last_updated is None or (now - last_updated) > threshold
@@ -140,9 +142,7 @@ async def health_check() -> HealthResponse:
             )
             forecasts = forecast_result.mappings().all()
             issued = [row["issued_at"] for row in forecasts]
-            last_forecast_at = (
-                min(issued) if issued and all(value is not None for value in issued) else None
-            )
+            last_forecast_at = _oldest_required_timestamp(issued)
             if not forecasts or any(
                 row["issued_at"] is None
                 or not row["has_future"]

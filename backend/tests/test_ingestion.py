@@ -326,7 +326,7 @@ def test_missing_optional_component_does_not_age_usable_forecast():
 
 
 @pytest.mark.parametrize(
-    "revision", ["partial", "late", "same_stamp", "stale", "unchanged", "future", "null"]
+    "revision", ["partial", "late", "same_stamp", "stale", "unchanged", "future", "null", "full"]
 )
 async def test_repeated_ingestion_keeps_historical_snapshots(
     database, sync_database, test_settings, revision
@@ -355,6 +355,11 @@ async def test_repeated_ingestion_keeps_historical_snapshots(
     if revision != "late":
         first.append(record("Solar", 10, 9))
     responses = {
+        "full": [
+            record("Solar", 11, 9),
+            record("Offshore Wind", 12, 5),
+            record("Onshore Wind", 12, 3),
+        ],
         "partial": [record("Onshore Wind", 11, 3)],
         "late": [record("Solar", 10, 9)],
         "same_stamp": [record("Solar", 10, 12)],
@@ -386,13 +391,14 @@ async def test_repeated_ingestion_keeps_historical_snapshots(
         assert len(rows) == 2
         assert tuple(rows[1]) == (
             second_seen,
-            {"partial": 8, "null": 5}.get(revision, 7),
+            {"partial": 8, "full": 8, "null": 5}.get(revision, 7),
             12 if revision == "same_stamp" else 9,
         )
     for cutoff, expected in [
         (first_seen - timedelta(seconds=1), None),
         (first_seen, 7),
-        (second_seen, {"partial": 8, "null": 5}.get(revision, 7)),
+        (second_seen - timedelta(microseconds=1), 7),
+        (second_seen, {"partial": 8, "full": 8, "null": 5}.get(revision, 7)),
     ]:
         values = load_asof_covariates(
             sync_database,
