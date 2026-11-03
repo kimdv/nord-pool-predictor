@@ -9,6 +9,7 @@ COPY pyproject.toml ./
 COPY src/ ./src/
 COPY areas.yaml ./
 COPY migrations/ ./migrations/
+COPY scripts/ ./scripts/
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir "."
