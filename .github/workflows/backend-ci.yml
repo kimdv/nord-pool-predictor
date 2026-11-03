@@ -12,12 +12,9 @@ defaults:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        postgres: [16, 18]
     services:
       postgres:
-        image: postgres:${{ matrix.postgres }}-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test

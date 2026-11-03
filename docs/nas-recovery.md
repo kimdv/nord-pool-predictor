@@ -83,7 +83,7 @@ separate disposable PostgreSQL instance before proceeding. Never use `down -v`.
 
 ## 3. Select and deploy the tested release
 
-Wait for Backend CI (PostgreSQL 16 and 18), Docker CI, Frontend CI, and the Release
+Wait for Backend CI (PostgreSQL 18), Docker CI, Frontend CI, and the Release
 workflow to succeed for the exact commit. Release publishes `sha-<full-commit>`
 tags and OCI revision labels. Its summary records backend and web digests.
 Copy those digests into the NAS project definition; SHA tags identify the build,
@@ -156,7 +156,8 @@ Acceptance:
 
 - Bootstrap completes and both areas have usable active `v2-asof` models, with
   model artifacts on the shared mount. No missing-driver failures appear.
-- Each latest successful run contains 672 quarter-hour values, has issuance no
+- Each latest successful run contains 768 quarter-hour values (seven days plus a
+  one-day refresh buffer), has issuance no
   older than 26 hours and has future values. Also inspect the newest job attempts:
   an old successful run must not conceal a new failure.
 - `/api/health/live` and `/api/health/ready` return 200 after recovery; verify

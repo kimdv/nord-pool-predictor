@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from nordpool_predictor import database as db
 from nordpool_predictor.ml import artifacts, predict, train
 from nordpool_predictor.ml.features import TARGET
+from nordpool_predictor.ml.horizon import DEFAULT_HORIZON_STEPS
 from nordpool_predictor.scheduler import bootstrap
 
 
@@ -183,6 +184,8 @@ async def test_bootstrap_trains_registers_and_persists_forecasts(
                 .all()
             )
             assert {r["area"] for r in runs} == ({"DK1"} if weather_failure else {"DK1", "DK2"})
-            assert all(r["status"] == "completed" and r["slots"] == 672 for r in runs)
+            assert all(
+                r["status"] == "completed" and r["slots"] == DEFAULT_HORIZON_STEPS for r in runs
+            )
     finally:
         artifacts._load_quantile.cache_clear()
