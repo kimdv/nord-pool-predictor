@@ -9,6 +9,7 @@ import pytest
 import time_machine
 from sqlalchemy import text
 
+from nordpool_predictor.api.routers import forecasts
 from nordpool_predictor.ingestion import production
 from nordpool_predictor.ml import train
 from nordpool_predictor.ml.asof import load_asof_covariates
@@ -332,3 +333,136 @@ def test_sparse_history_reports_values_and_provenance():
     assert metrics["coverage"]["solar_mw"]["non_null_samples"] == 0
     assert metrics["provenance"] == {"legacy_receipt": 200}
     assert not metrics["baseline_without_production"]
+
+
+async def test_backfill_does_not_rewrite_an_existing_runs_reported_horizon(
+    database, sync_database, test_settings
+):
+    cutoff = datetime(2026, 4, 1, 18, tzinfo=UTC)
+    live_target = cutoff + timedelta(hours=6)
+    backfilled_target = cutoff + timedelta(hours=12)
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
+                feature_set_version, trained_at, artifact_path)
+            VALUES ('test', 'test', 'DK1', 'direct', 'v2-asof', NOW(), '/tmp/test')
+        """)
+        )
+        await conn.execute(
+            text("""
+            INSERT INTO forecast_runs (area, model_version, issued_at, horizon_steps, status)
+            VALUES ('DK1', 'test', :cutoff, 8, 'completed')
+        """),
+            {"cutoff": cutoff},
+        )
+        await conn.execute(
+            text("""
+            INSERT INTO production_forecasts
+                (area, ts, issued_at, created_at, wind_mw, source, components_json)
+            VALUES ('DK1', :target, :issued, :issued, 10,
+                    'energidataservice_forecast_v2', '{}')
+        """),
+            {"target": live_target, "issued": cutoff - timedelta(hours=1)},
+        )
+    with patch.object(forecasts, "get_settings", return_value=test_settings):
+        before = await forecasts.get_latest_forecast("DK1")
+        async with database.begin() as conn:
+            await conn.execute(
+                text("""
+                INSERT INTO production_forecasts
+                    (area, ts, issued_at, created_at, wind_mw, source)
+                VALUES ('DK1', :target, :published, :received, 20, :source)
+            """),
+                {
+                    "target": backfilled_target,
+                    "published": cutoff - timedelta(hours=2),
+                    "received": cutoff + timedelta(hours=1),
+                    "source": production.SOURCE_DAY_AHEAD_HISTORY,
+                },
+            )
+        after = await forecasts.get_latest_forecast("DK1")
+        assert (
+            after.production_forecast_horizon == before.production_forecast_horizon == live_target
+        )
+        # Reconstructed history remains usable for simulated historical training.
+        training = load_asof_covariates(
+            sync_database,
+            pd.DataFrame(index=pd.DatetimeIndex([backfilled_target])),
+            "DK1",
+            cutoff,
+            "production",
+        )
+        assert training["wind_mw"].iloc[0] == 20
+        async with database.begin() as conn:
+            await conn.execute(
+                text("""
+                INSERT INTO forecast_runs (area, model_version, issued_at, horizon_steps, status)
+                VALUES ('DK1', 'test', :cutoff, 8, 'completed')
+            """),
+                {"cutoff": cutoff + timedelta(hours=1)},
+            )
+        later = await forecasts.get_latest_forecast("DK1")
+    assert later.production_forecast_horizon == backfilled_target
+
+
+@pytest.mark.parametrize("retrieval_fails", [False, True])
+async def test_retraining_shares_one_backfill_attempt_per_job(test_settings, retrieval_fails):
+    from nordpool_predictor.scheduler import jobs
+
+    seen = []
+
+    async def prepare_only(area, **kwargs):
+        seen.append(area)
+        await train.prepare_training_data(area, **kwargs)
+
+    async def run_job(job_type, operation, area):
+        await operation(area)
+
+    with (
+        patch.object(jobs, "get_settings", return_value=test_settings),
+        patch.object(jobs, "_run_job", side_effect=run_job),
+        patch.object(train, "get_settings", return_value=test_settings),
+        patch.object(train, "train_models", side_effect=prepare_only),
+        patch.object(
+            train, "build_feature_matrix", side_effect=lambda *args: training_frame()
+        ) as build,
+        patch.object(train, "_has_usable_active_model", AsyncMock(return_value=True)),
+        patch.object(
+            train,
+            "backfill_production_forecasts",
+            AsyncMock(side_effect=RuntimeError("offline") if retrieval_fails else None),
+        ) as backfill,
+    ):
+        for attempt in [1, 2]:
+            with pytest.raises(RuntimeError, match="DK1, DK2"):
+                await jobs.job_retrain_model()
+            assert backfill.await_count == attempt
+        assert seen == ["DK1", "DK2", "DK1", "DK2"]
+        assert build.call_count == (4 if retrieval_fails else 8)
+
+
+async def test_shared_backfill_can_recover_one_area_without_refetching_for_the_other(
+    test_settings,
+):
+    recovered = False
+
+    async def retrieve(**kwargs):
+        nonlocal recovered
+        recovered = True
+
+    def build(area, *args):
+        return training_frame(0 if recovered and area == "DK1" else np.nan)
+
+    shared = train.ProductionHistoryBackfill()
+    with (
+        patch.object(train, "get_settings", return_value=test_settings),
+        patch.object(train, "build_feature_matrix", side_effect=build),
+        patch.object(train, "_has_usable_active_model", AsyncMock(return_value=True)),
+        patch.object(train, "backfill_production_forecasts", side_effect=retrieve) as backfill,
+    ):
+        first = await train.prepare_training_data("DK1", production_backfill=shared)
+        assert first["wind_mw"].tolist() == [0] * 200
+        with pytest.raises(ValueError, match="active model preserved"):
+            await train.prepare_training_data("DK2", production_backfill=shared)
+    backfill.assert_awaited_once_with(days=365)

@@ -34,6 +34,24 @@ QUANTILES: dict[str, float] = {"p10": 0.1, "p50": 0.5, "p90": 0.9}
 MAX_HORIZON_STEPS = 672
 
 
+class ProductionHistoryBackfill:
+    """Share one historical retrieval across the sequential areas in a job."""
+
+    def __init__(self) -> None:
+        self._attempted = False
+        self._error: Exception | None = None
+
+    async def run(self) -> None:
+        if not self._attempted:
+            self._attempted = True
+            try:
+                await backfill_production_forecasts(days=365)
+            except Exception as exc:
+                self._error = exc
+        if self._error is not None:
+            raise self._error
+
+
 # ---------------------------------------------------------------------------
 # Optuna objective
 # ---------------------------------------------------------------------------
@@ -203,7 +221,9 @@ def _train_sync(
     return model_version, manifest, metrics, trained_models, now
 
 
-async def train_models(area: str) -> str:
+async def train_models(
+    area: str, *, production_backfill: ProductionHistoryBackfill | None = None
+) -> str:
     """Train p10 / p50 / p90 quantile LightGBM models for *area*.
 
     Returns the ``model_version`` string (e.g. ``lgbm-DK1-20260406-134500-<id>``).
@@ -217,7 +237,7 @@ async def train_models(area: str) -> str:
         settings.training_window_days,
     )
 
-    training_data = await prepare_training_data(area)
+    training_data = await prepare_training_data(area, production_backfill=production_backfill)
     model_version, artifact_path, metrics, _models, now = await asyncio.to_thread(
         _train_sync,
         area,
@@ -320,7 +340,9 @@ async def _has_usable_active_model(area: str) -> bool:
     return True
 
 
-async def prepare_training_data(area: str) -> pd.DataFrame:
+async def prepare_training_data(
+    area: str, *, production_backfill: ProductionHistoryBackfill | None = None
+) -> pd.DataFrame:
     """Recover missing production history once, before tuning or writing artifacts."""
     import asyncio
 
@@ -343,7 +365,7 @@ async def prepare_training_data(area: str) -> pd.DataFrame:
     if metrics["baseline_without_production"]:
         preserve_existing = await _has_usable_active_model(area)
         try:
-            await backfill_production_forecasts(days=365)
+            await (production_backfill or ProductionHistoryBackfill()).run()
         except Exception as exc:
             if preserve_existing:
                 raise RuntimeError(

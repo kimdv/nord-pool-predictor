@@ -163,9 +163,14 @@ async def job_score_forecasts() -> None:
 
 
 async def job_retrain_model() -> None:
-    from nordpool_predictor.ml.train import train_models
+    from nordpool_predictor.ml.train import ProductionHistoryBackfill, train_models
 
-    await _run_area_jobs("retrain_model", train_models)
+    production_backfill = ProductionHistoryBackfill()
+
+    async def train_area(area: str) -> None:
+        await train_models(area, production_backfill=production_backfill)
+
+    await _run_area_jobs("retrain_model", train_area)
 
 
 async def job_cleanup() -> None:

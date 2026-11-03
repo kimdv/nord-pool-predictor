@@ -22,7 +22,7 @@ from nordpool_predictor.ml.predict import (
     run_forecast,
     select_usable_model,
 )
-from nordpool_predictor.ml.train import train_models
+from nordpool_predictor.ml.train import ProductionHistoryBackfill, train_models
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,7 @@ async def bootstrap() -> None:
 
     shared_history_ready = True
     price_window_fetched_until: datetime | None = None
+    production_backfill = ProductionHistoryBackfill()
     if needs_training:
         # These sources fetch both areas together. A failure affects new training,
         # but must not block forecast recovery for already usable models.
@@ -154,7 +155,7 @@ async def bootstrap() -> None:
                 ) + timedelta(days=1)
 
     async def train_area(area: str) -> None:
-        models[area] = await train_models(area)
+        models[area] = await train_models(area, production_backfill=production_backfill)
 
     for area in needs_training:
         history_ready = await attempt(

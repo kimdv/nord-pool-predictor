@@ -144,6 +144,8 @@ async def get_latest_forecast(area: str) -> ForecastRunResponse:
                         SELECT DISTINCT ON (ts) ts, wind_mw, solar_mw
                         FROM production_feature_snapshots
                         WHERE area = :area AND available_at <= :cutoff
+                          AND (availability_basis <> 'day_ahead_schedule'
+                               OR created_at <= :cutoff)
                         ORDER BY ts, available_at DESC, issued_at DESC, source
                     ) snapshots
                     WHERE wind_mw IS NOT NULL OR solar_mw IS NOT NULL

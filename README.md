@@ -332,6 +332,8 @@ Training metrics report non-null wind/solar sample counts, coverage fractions, a
 snapshot availability provenance. Sparse history and a missing wind or solar input
 are accepted. Only when both inputs are entirely absent does the durable retraining
 job attempt a historical forecast backfill, then rebuild its training matrix once.
+Bootstrap and retraining share that one retrieval attempt across configured areas,
+including empty or failed retrievals; a later job can retry.
 Failed retrieval or still-missing inputs preserve a usable active model. With no
 usable model, first-install training can retain its baseline behavior and explicitly
 reports `baseline_without_production` in model metrics.
@@ -344,6 +346,8 @@ to UTC ([dataset metadata](https://api.energidataservice.dk/meta/dataset/Forecas
 `ForecastCurrent` and its `TimestampUTC` do not reconstruct historical availability.
 No production audit, deletion, mandatory recollection, or unconditional upgrade
 backfill is required.
+Coverage reported for an existing price run excludes reconstructed history imported
+after that run's issuance, even when its scheduled publication was earlier.
 
 On each start the worker checks every configured area independently. Existing
 models are reused only when their feature set and all quantile artifacts are
