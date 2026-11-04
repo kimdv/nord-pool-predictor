@@ -27,6 +27,62 @@ def _quarter_index(start: str, periods: int) -> pd.DatetimeIndex:
 
 
 class TestAddCalendarFeatures:
+    @pytest.mark.parametrize(
+        "utc_times,local_times,holidays",
+        [
+            (
+                ["2025-12-24 22:45", "2025-12-24 23:00"],
+                ["2025-12-24 23:45", "2025-12-25 00:00"],
+                [0, 1],
+            ),
+            (
+                ["2025-06-06 21:45", "2025-06-06 22:00"],
+                ["2025-06-06 23:45", "2025-06-07 00:00"],
+                [0, 0],
+            ),
+            (
+                ["2025-04-30 21:45", "2025-04-30 22:00"],
+                ["2025-04-30 23:45", "2025-05-01 00:00"],
+                [0, 0],
+            ),
+            (
+                ["2025-12-31 22:45", "2025-12-31 23:00"],
+                ["2025-12-31 23:45", "2026-01-01 00:00"],
+                [0, 1],
+            ),
+            (
+                ["2025-03-30 00:45", "2025-03-30 01:00", "2025-03-30 01:15"],
+                ["2025-03-30 01:45", "2025-03-30 03:00", "2025-03-30 03:15"],
+                [0, 0, 0],
+            ),
+            (
+                ["2025-10-26 00:45", "2025-10-26 01:00", "2025-10-26 01:45"],
+                ["2025-10-26 02:45", "2025-10-26 02:00", "2025-10-26 02:45"],
+                [0, 0, 0],
+            ),
+        ],
+        ids=["holiday", "weekend", "month", "year", "spring-forward", "fall-back"],
+    )
+    def test_danish_calendar_preserves_utc_index(self, utc_times, local_times, holidays):
+        idx = pd.DatetimeIndex(utc_times, tz=UTC, name="ts")
+        expected = pd.DatetimeIndex(local_times)
+        df = pd.DataFrame({TARGET: np.arange(len(idx))}, index=idx)
+
+        result = add_calendar_features(df)
+
+        assert result.index is idx
+        assert result[TARGET].tolist() == list(range(len(idx)))
+        for name, values, period in [
+            ("hour", expected.hour, 24),
+            ("dow", expected.day_of_week, 7),
+            ("quarter", expected.hour * 4 + expected.minute // 15, 96),
+        ]:
+            np.testing.assert_allclose(result[f"{name}_sin"], np.sin(2 * np.pi * values / period))
+            np.testing.assert_allclose(result[f"{name}_cos"], np.cos(2 * np.pi * values / period))
+        assert result["month"].tolist() == expected.month.tolist()
+        assert result["is_weekend"].tolist() == (expected.day_of_week >= 5).astype(int).tolist()
+        assert result["is_holiday"].tolist() == holidays
+
     def test_sin_cos_bounded(self):
         idx = _quarter_index("2025-01-06", periods=672)
         df = pd.DataFrame({TARGET: np.random.default_rng(42).random(672)}, index=idx)

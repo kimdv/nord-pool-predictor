@@ -163,8 +163,8 @@ def build_feature_matrix(
 
 
 def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Sin/cos cyclical encoding, month, weekend and Danish-holiday flags."""
-    idx = df.index
+    """Danish local calendar features without changing the timestamp index."""
+    idx = df.index.tz_convert("Europe/Copenhagen")
     hour = idx.hour
     dow = idx.dayofweek
 

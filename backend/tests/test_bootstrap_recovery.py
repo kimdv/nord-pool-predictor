@@ -29,7 +29,8 @@ async def test_midnight_recovery_uses_validated_inputs_and_repairs_expired_forec
             text("""
                 INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
                     feature_set_version, trained_at, artifact_path, is_active)
-                VALUES (:version, 'test', :area, 'direct', 'v2-asof', NOW(), '/tmp/test', TRUE)
+                VALUES (:version, 'test', :area, 'direct', 'v3-copenhagen',
+                    NOW(), '/tmp/test', TRUE)
             """),
             [{"area": area, "version": version} for area, version in versions.items()],
         )

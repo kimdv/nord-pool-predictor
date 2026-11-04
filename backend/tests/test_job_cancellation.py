@@ -47,7 +47,7 @@ async def test_cancellation_finalizes_only_its_unfinished_forecasts(database, jo
             INSERT INTO model_versions
                 (model_version, model_type, area, horizon_strategy, feature_set_version,
                  trained_at, artifact_path, is_active)
-            VALUES ('cancellation-test', 'lgbm_quantile', 'DK1', 'direct', 'v2-asof',
+            VALUES ('cancellation-test', 'lgbm_quantile', 'DK1', 'direct', 'v3-copenhagen',
                     NOW(), '/unused', TRUE)
         """)
         )
