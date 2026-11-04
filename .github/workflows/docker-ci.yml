@@ -1,8 +1,7 @@
 name: Docker CI
 
 on:
-  push:
-    branches: [main]
+  workflow_call:
   pull_request:
     branches: [main]
 
@@ -24,6 +23,24 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify Compose PostgreSQL persistence after recreation
+        shell: bash
+        env:
+          COMPOSE_PROJECT_NAME: persistence-${{ github.run_id }}-${{ github.run_attempt }}
+          NORDPOOL_DB_USER: nordpool
+          NORDPOOL_DB_PASSWORD: persistence-test-only
+        run: |
+          # This project and its volumes are disposable CI storage only.
+          trap 'docker compose down --volumes' EXIT
+          docker compose up -d --wait postgres
+          original_container=$(docker compose ps -q postgres)
+          docker compose exec -T postgres psql -U nordpool -d nordpool -v ON_ERROR_STOP=1 \
+            -c "CREATE TABLE persistence_sentinel (value text); INSERT INTO persistence_sentinel VALUES ('survived');"
+          docker compose up -d --wait --force-recreate --renew-anon-volumes postgres
+          test "$original_container" != "$(docker compose ps -q postgres)"
+          test "$(docker compose exec -T postgres psql -U nordpool -d nordpool -At -v ON_ERROR_STOP=1 \
+            -c 'SELECT value FROM persistence_sentinel')" = survived
 
       - name: Build backend image
         run: docker build -t nordpool-predictor-app:ci ./backend
