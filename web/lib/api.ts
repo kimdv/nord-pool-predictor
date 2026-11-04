@@ -122,24 +122,6 @@ export interface HAResponse {
 
 /* ---------- Fetchers (server-side only) ---------- */
 
-export function fetchPrices(area: string, start: string, end: string) {
-  return get<PricesResponse>(
-    `/api/prices/${area}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
-  );
-}
-
-export function fetchLatestForecast(area: string) {
-  return get<ForecastResponse>(`/api/forecasts/${area}/latest`);
-}
-
-export function fetchAccuracy(area: string, limit = 5) {
-  return get<AccuracyRecord[]>(`/api/forecasts/${area}/accuracy?limit=${limit}`);
-}
-
-export function fetchBenchmarks(area: string) {
-  return get<BenchmarkResponse>(`/api/forecasts/${area}/benchmarks`);
-}
-
 export function fetchAreas() {
   return get<AreaInfo[]>("/api/areas");
 }
