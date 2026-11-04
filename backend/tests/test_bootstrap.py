@@ -8,6 +8,7 @@ import pytest
 import time_machine
 from sqlalchemy import text
 
+from nordpool_predictor.ingestion import weather
 from nordpool_predictor.ingestion.prices import backfill_prices as _backfill_prices
 from nordpool_predictor.scheduler import bootstrap as module
 from nordpool_predictor.scheduler.bootstrap import verify_price_history as _verify_price_history
@@ -34,7 +35,6 @@ async def test_partial_bootstrap_preserves_ready_area_and_completes_missing_area
         patch.object(module, "run_forecast", AsyncMock(side_effect=forecast_area)) as forecast,
         patch.object(module, "verify_price_history", AsyncMock()),
         patch.object(module, "backfill_prices", AsyncMock()),
-        patch.object(module, "backfill_weather", AsyncMock()),
         patch.object(module, "backfill_production", AsyncMock()),
         patch.object(module, "backfill_crossborder", AsyncMock()),
         patch.object(module, "ingest_weather_forecasts", AsyncMock()),
@@ -61,7 +61,6 @@ def recovery_mocks(test_settings):
             name: stack.enter_context(patch.object(module, name, AsyncMock()))
             for name in (
                 "backfill_prices",
-                "backfill_weather",
                 "backfill_production",
                 "backfill_crossborder",
                 "ingest_weather_forecasts",
@@ -82,7 +81,7 @@ def recovery_mocks(test_settings):
         yield operations
 
 
-@pytest.mark.parametrize("failed", ["backfill_production", "backfill_weather"])
+@pytest.mark.parametrize("failed", ["backfill_production", "backfill_crossborder"])
 async def test_backfill_failure_still_recovers_area_with_usable_model(recovery_mocks, failed):
     recovery_mocks[failed].side_effect = RuntimeError("upstream failure")
     with pytest.raises(RuntimeError, match="Bootstrap incomplete"):
@@ -159,16 +158,39 @@ async def test_live_production_failure_happens_after_training(recovery_mocks):
     recovery_mocks["run_forecast"].assert_not_awaited()
 
 
-async def test_weather_backfill_is_isolated_per_training_area(recovery_mocks):
-    async def weather(*, days, area):
+@pytest.mark.parametrize("models", [{}, {"DK1": "v1"}])
+async def test_archive_weather_failure_cannot_block_training(recovery_mocks, models):
+    with (
+        patch.object(module, "ready_models", AsyncMock(return_value=models)),
+        patch.object(
+            weather, "_request_with_retry", AsyncMock(side_effect=RuntimeError("archive offline"))
+        ) as archive,
+    ):
+        await module.bootstrap()
+    archive.assert_not_awaited()
+    assert [call.args[0] for call in recovery_mocks["train_models"].await_args_list] == [
+        area for area in ("DK1", "DK2") if area not in models
+    ]
+    assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
+        "DK1",
+        "DK2",
+    ]
+
+
+async def test_training_failure_is_isolated_per_area(recovery_mocks):
+    async def train(area, **kwargs):
         if area == "DK1":
-            raise RuntimeError("DK1 unavailable")
+            raise RuntimeError("DK1 training failed")
+        return "trained"
 
     with patch.object(module, "ready_models", AsyncMock(return_value={})):
-        recovery_mocks["backfill_weather"].side_effect = weather
-        with pytest.raises(RuntimeError, match="DK1 weather backfill"):
+        recovery_mocks["train_models"].side_effect = train
+        with pytest.raises(RuntimeError, match="DK1 training"):
             await module.bootstrap()
-    recovery_mocks["train_models"].assert_awaited_once_with("DK2", production_backfill=ANY)
+    assert [call.args[0] for call in recovery_mocks["train_models"].await_args_list] == [
+        "DK1",
+        "DK2",
+    ]
     recovery_mocks["run_forecast"].assert_awaited_once_with(
         "DK2", issued_at=ANY, model_version=ANY
     )

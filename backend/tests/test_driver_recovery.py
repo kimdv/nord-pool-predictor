@@ -140,7 +140,6 @@ async def test_bootstrap_trains_registers_and_persists_forecasts(
             )
             for name in (
                 "backfill_prices",
-                "backfill_weather",
                 "backfill_production",
                 "backfill_crossborder",
                 "ingest_production_forecasts",
