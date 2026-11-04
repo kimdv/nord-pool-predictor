@@ -91,8 +91,8 @@ WITH latest_requests AS (
         END AS failures_in_batch
     FROM latest_requests request
     LEFT JOIN job_runs attempt ON attempt.job_type = request.job_name
-        AND attempt.started_at >= request.started_at
-        AND (request.finished_at IS NULL OR attempt.started_at <= request.finished_at)
+        AND attempt.created_at >= request.started_at
+        AND (request.finished_at IS NULL OR attempt.created_at <= request.finished_at)
     GROUP BY request.job_id, request.job_name, request.created_at, request.started_at,
              request.finished_at, request.status
 ), historical_attempts AS (
