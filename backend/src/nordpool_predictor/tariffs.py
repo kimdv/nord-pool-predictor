@@ -155,31 +155,30 @@ async def _fetch_latest_tariff(
     day: date,
 ) -> list[float]:
     """Return hourly prices valid on the requested Copenhagen calendar date."""
-    cache_key = f"tariff:{gln}:{charge_type_code}:{day.isoformat()}"
+    cache_key = f"tariff_records:{gln}:{charge_type_code}"
     cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    records = await eds_get(
-        DATAHUB_DATASET,
-        {
-            # DatahubPricelist filters ValidFrom by local calendar date.
-            "end": (day + timedelta(days=1)).isoformat(),
-            "filter": f'{{"GLN_Number":["{gln}"],"ChargeTypeCode":["{charge_type_code}"]}}',
-            "sort": "ValidFrom DESC",
-            "limit": "0",
-        },
-        respect_rate_limit=False,
-    )
+    if cached is not None and cached[0] >= day:
+        records = cached[1]
+    else:
+        records = await eds_get(
+            DATAHUB_DATASET,
+            {
+                # DatahubPricelist filters ValidFrom by local calendar date.
+                "end": (day + timedelta(days=1)).isoformat(),
+                "filter": f'{{"GLN_Number":["{gln}"],"ChargeTypeCode":["{charge_type_code}"]}}',
+                "sort": "ValidFrom DESC",
+                "limit": "0",
+            },
+            respect_rate_limit=False,
+        )
+        _cache_set(cache_key, (day, records))
     for record in records:
         valid_from = datetime.fromisoformat(record["ValidFrom"]).date()
         valid_to = (
             datetime.fromisoformat(record["ValidTo"]).date() if record.get("ValidTo") else None
         )
         if valid_from <= day and (valid_to is None or day < valid_to):
-            result = _extract_hourly_prices(record)
-            _cache_set(cache_key, result)
-            return result
+            return _extract_hourly_prices(record)
     raise TariffUnavailableError("No tariff data available for the requested day")
 
 

@@ -78,7 +78,8 @@ async def test_historical_failure_leaves_today_and_other_days_available(
 
 async def test_no_history_parameter_preserves_today_only(setup_history):
     setup_history.execute.side_effect = [result([]), result([])]
-    response = await router.price_breakdown("DK1", "5790000000000", "CD")
+    with time_machine.travel("2026-11-04T12:00:00Z", tick=False):
+        response = await router.price_breakdown("DK1", "5790000000000", "CD")
     assert len(response.slots) == 96
     assert response.historical_slots == []
     assert setup_history.execute.await_count == 2
