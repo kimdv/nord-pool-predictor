@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 from nordpool_predictor.api.schemas.health import JobRunResponse, JobSummary
 from nordpool_predictor.database import get_session
-from nordpool_predictor.scheduler.queue import JOB_NAMES, enqueue_job
+from nordpool_predictor.scheduler.queue import JOB_NAMES, cancel_job, enqueue_job
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -42,12 +42,22 @@ async def list_jobs(
 
 @router.post("/trigger/{job_name}", status_code=202)
 async def trigger_job(job_name: str) -> dict[str, str]:
-    if job_name not in JOB_NAMES:
+    if job_name not in JOB_NAMES | {"bootstrap"}:
         raise HTTPException(status_code=404, detail=f"Unknown job: {job_name}")
     job_id = await enqueue_job(job_name)
     if job_id is None:
         raise HTTPException(status_code=409, detail=f"Job {job_name} is already queued or running")
     return {"status": "pending", "job": job_name, "job_id": str(job_id)}
+
+
+@router.post("/cancel/{job_name}", status_code=202)
+async def cancel_job_request(job_name: str) -> dict[str, str]:
+    if job_name not in JOB_NAMES | {"bootstrap"}:
+        raise HTTPException(status_code=404, detail=f"Unknown job: {job_name}")
+    status = await cancel_job(job_name)
+    if status is None:
+        raise HTTPException(status_code=409, detail=f"Job {job_name} is no longer active")
+    return {"status": status, "job": job_name}
 
 
 @router.get("/requests/{job_id}")
@@ -67,7 +77,8 @@ async def running_jobs() -> dict[str, list[str]]:
     async with get_session() as session:
         result = await session.execute(
             text(
-                "SELECT job_name FROM job_requests WHERE status IN ('pending', 'running') "
+                "SELECT job_name FROM job_requests "
+                "WHERE status IN ('pending', 'running', 'cancelling') "
                 "ORDER BY job_name"
             )
         )

@@ -249,6 +249,9 @@ async def test_ready_requires_success_for_every_area_and_completed_bootstrap(
     await enqueue_job("bootstrap")
     assert (await client.get("/api/health/ready")).status_code == 503
     async with database.begin() as conn:
+        await conn.execute(text("UPDATE job_requests SET status = 'cancelling'"))
+    assert (await client.get("/api/health/ready")).status_code == 503
+    async with database.begin() as conn:
         await conn.execute(text("UPDATE job_requests SET status = 'completed'"))
     assert (await client.get("/api/health/ready")).status_code == 200
 
