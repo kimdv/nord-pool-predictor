@@ -49,6 +49,10 @@ All data sources are free and require no API keys:
 
 ### Run
 
+These commands are for a fresh installation. Before updating an existing database,
+follow the [storage inventory, backup, and migration steps](docs/nas-recovery.md).
+PostgreSQL 18 uses a different volume target; changing the mount is not a migration.
+
 ```bash
 # Clone the repository
 git clone https://github.com/kimdv/nord-pool-predictor.git
@@ -172,6 +176,10 @@ Use the provided `docker-compose.yml` which defines four services: `postgres`, `
 ### Existing Docker Compose setup
 
 If you already have services running, add the Nord Pool stack on dedicated networks:
+
+The example below retains the PostgreSQL 16 storage layout. For an existing Nord
+Pool database, preserve its image and storage until completing the recovery
+guide's backup and migration procedure; do not change only the image or mount.
 
 ```yaml
 services:
