@@ -78,8 +78,18 @@ def _objective(
     }
 
     fold_maes: list[float] = []
-    for train_idx, val_idx in tscv.split(X):
-        X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
+    for fold, (train_idx, val_idx) in enumerate(tscv.split(X), start=1):
+        X_val = X.iloc[val_idx]
+        issuances = X_val.index - pd.to_timedelta(
+            X_val[HORIZON_STEP_FEATURE].to_numpy() * 15, unit="min"
+        )
+        train_idx = train_idx[X.index[train_idx] < issuances.min()]
+        if len(train_idx) < 100:
+            raise ValueError(
+                f"Insufficient training samples in tuning fold {fold} after purging "
+                f"validation issuance overlap: {len(train_idx)}"
+            )
+        X_tr = X.iloc[train_idx]
         y_tr, y_val = y.iloc[train_idx], y.iloc[val_idx]
 
         model = lgb.LGBMRegressor(**params)
