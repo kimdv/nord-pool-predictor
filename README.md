@@ -107,6 +107,7 @@ All times are in CET/CEST (Europe/Copenhagen):
 ### Prices & Forecasts
 
 - `GET /api/prices/{area}?start=...&end=...` — Historical spot prices
+- `GET /api/tariffs/breakdown/{area}?gln=...&code=...` — Today’s price breakdown. Add `history_end=<timezone-aware quarter-hour timestamp>` to include `historical_slots` from the preceding 168 hours, using published spot prices and tariffs valid on each date. Unavailable historical days are omitted.
 - `GET /api/forecasts/{area}/latest` — Latest forecast with p10/p50/p90 bands
 - `GET /api/forecasts/{area}/accuracy` — Recent forecast accuracy metrics
 - `GET /api/forecasts/{area}/benchmarks` — ML vs baseline model comparison

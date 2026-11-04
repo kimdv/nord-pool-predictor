@@ -16,6 +16,8 @@ import {
 import type { AreaCode } from "@/components/area-switcher";
 import ChartSkeleton from "./chart-skeleton";
 import RequestError from "./request-error";
+import PriceHistorySummary from "./price-history-summary";
+import { historicalRange, historyWindow } from "@/lib/price-history";
 import { fetchJson } from "@/lib/client-api";
 import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
@@ -74,6 +76,8 @@ export default function PriceBreakdownChart({
   refreshVersion = 0,
 }: Props) {
   const [data, setData] = useState<SlotBreakdown[] | null>(null);
+  const [history, setHistory] = useState<{ slots: SlotBreakdown[]; end: number } | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [retryVersion, setRetryVersion] = useState(0);
@@ -81,10 +85,13 @@ export default function PriceBreakdownChart({
   const [prevKey, setPrevKey] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
+  const historyEnd = historyWindow(new Date(nowMs)).end;
   const currentKey = gln && code ? `${area}:${gln}:${code}` : null;
   if (currentKey !== prevKey) {
     setPrevKey(currentKey);
     setData(null);
+    setHistory(null);
+    setHistoryLoading(currentKey !== null);
     setError(false);
     setLoading(currentKey !== null);
   }
@@ -114,7 +121,25 @@ export default function PriceBreakdownChart({
     return () => {
       controller.abort();
     };
-  }, [area, gln, code, refreshVersion, retryVersion]);
+  }, [area, gln, code, refreshVersion, retryVersion, historyEnd]);
+
+  useEffect(() => {
+    if (!gln || !code) return;
+    const controller = new AbortController();
+    setHistory(null);
+    setHistoryLoading(true);
+    fetchJson<{ historical_slots: SlotBreakdown[] }>(
+      `/api/backend/tariffs/breakdown/${area}?gln=${encodeURIComponent(gln)}&code=${encodeURIComponent(code)}&history_end=${encodeURIComponent(new Date(historyEnd).toISOString())}`,
+      { signal: controller.signal },
+    ).then((json) => {
+      if (!controller.signal.aborted) setHistory({ slots: json.historical_slots, end: historyEnd });
+    }).catch(() => {
+      if (!controller.signal.aborted) setHistory(null);
+    }).finally(() => {
+      if (!controller.signal.aborted) setHistoryLoading(false);
+    });
+    return () => controller.abort();
+  }, [area, gln, code, refreshVersion, retryVersion, historyEnd]);
 
   const retry = useCallback(() => setRetryVersion((version) => version + 1), []);
 
@@ -141,6 +166,10 @@ export default function PriceBreakdownChart({
     () => buildPriceBreakdownSeries(data ?? [], disabled, activeSlotIndex),
     [activeSlotIndex, data, disabled],
   );
+  const range = useMemo(() => history ? historicalRange(
+    buildPriceBreakdownSeries(history.slots.filter((slot) => slot.spot_source === "actual"), disabled, -1)
+      .map((point) => ({ ts: point.ts, value: point.total })), history.end,
+  ) : null, [history, disabled]);
   const activeTimestamp = chartData[activeSlotIndex]?.ts ?? null;
 
   if (!gln || !code) {
@@ -201,6 +230,7 @@ export default function PriceBreakdownChart({
         </div>
       </div>
 
+      <PriceHistorySummary range={range} loading={historyLoading} />
       {error && <RequestError message="Kunne ikke opdatere prissammensætningen. De senest hentede priser vises." onRetry={retry} retrying={loading} />}
       {data.some((slot) => slot.spot_source !== "actual") && (
         <p className="mb-3 text-xs text-amber-700">
@@ -275,6 +305,34 @@ export default function PriceBreakdownChart({
               }}
             />
             <Legend content={() => null} />
+            {range && (
+              <ReferenceLine
+                y={range.min}
+                ifOverflow="extendDomain"
+                stroke="#64748b"
+                strokeDasharray="3 4"
+                label={{
+                  value: range.min === range.max ? "Laveste/højeste · 7 dage" : "Laveste · 7 dage",
+                  position: "insideBottomRight",
+                  fill: "#475569",
+                  fontSize: 11,
+                }}
+              />
+            )}
+            {range && range.max !== range.min && (
+              <ReferenceLine
+                y={range.max}
+                ifOverflow="extendDomain"
+                stroke="#98601d"
+                strokeDasharray="7 4"
+                label={{
+                  value: "Højeste · 7 dage",
+                  position: "insideTopRight",
+                  fill: "#98601d",
+                  fontSize: 11,
+                }}
+              />
+            )}
             {activeTimestamp && (
               <ReferenceLine
                 x={activeTimestamp}

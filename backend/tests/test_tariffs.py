@@ -281,3 +281,81 @@ async def test_tariff_validity_uses_half_open_local_dates(monkeypatch, start, en
     else:
         with pytest.raises(tariffs.TariffUnavailableError):
             await tariffs._fetch_latest_tariff("grid", "CD", date(2026, 1, 1))
+
+
+async def test_eight_day_breakdowns_fetch_each_tariff_once(monkeypatch):
+    tariffs._tariff_cache.clear()
+    provider = AsyncMock(
+        return_value=[
+            {"ValidFrom": "2026-11-02T00:00:00", "ValidTo": None, "Price1": 0.2},
+            {"ValidFrom": "2026-10-31T00:00:00", "ValidTo": "2026-11-02T00:00:00", "Price1": 0},
+            {"ValidFrom": "2025-01-01T00:00:00", "ValidTo": "2026-10-31T00:00:00", "Price1": 0.1},
+        ]
+    )
+    monkeypatch.setattr(tariffs, "eds_get", provider)
+    today = date(2026, 11, 4)
+    for offset in range(8):
+        day = today - timedelta(days=offset)
+        start = datetime.combine(day, dtime.min, tzinfo=CPH).astimezone(UTC)
+        slots = await tariffs.build_price_breakdown(
+            "DK1", "grid", "CD", {start.isoformat(): 0.5}, day=day
+        )
+        rate = 0.2 if day >= date(2026, 11, 2) else 0 if day >= date(2026, 10, 31) else 0.1
+        for field in [
+            "grid_tariff",
+            "grid_loss_tariff",
+            "system_tariff",
+            "transmission_tariff",
+            "electricity_tax",
+        ]:
+            assert slots[0][field] == rate
+        assert slots[0]["total_incl_vat"] == pytest.approx((0.5 + 5 * rate) * 1.25)
+    assert provider.await_count == 5
+    assert len({call.args[1]["filter"] for call in provider.await_args_list}) == 5
+    assert all(call.args[1]["end"] == "2026-11-05" for call in provider.await_args_list)
+
+    with pytest.raises(tariffs.TariffUnavailableError):
+        await tariffs._fetch_latest_tariff("grid", "CD", date(2024, 12, 31))
+    assert provider.await_count == 5
+
+
+async def test_tariff_record_cache_refetches_for_later_dates_and_expiry(monkeypatch):
+    tariffs._tariff_cache.clear()
+    provider = AsyncMock(
+        return_value=[
+            {"ValidFrom": "2026-01-01T00:00:00", "ValidTo": None, "Price1": 0.1},
+        ]
+    )
+    monkeypatch.setattr(tariffs, "eds_get", provider)
+    assert await tariffs._fetch_latest_tariff("grid", "CD", date(2026, 1, 2)) == [0.1] * 24
+    assert await tariffs._fetch_latest_tariff("grid", "CD", date(2026, 1, 1)) == [0.1] * 24
+    assert provider.await_count == 1
+    await tariffs._fetch_latest_tariff("grid", "CD", date(2026, 1, 3))
+    assert provider.await_count == 2
+    assert provider.await_args.args[1]["end"] == "2026-01-04"
+
+    key = "tariff_records:grid:CD"
+    cached_at, records = tariffs._tariff_cache[key]
+    tariffs._tariff_cache[key] = (cached_at - tariffs._CACHE_TTL - 1, records)
+    provider.return_value = [
+        {"ValidFrom": "2026-01-01T00:00:00", "ValidTo": None, "Price1": 0.3},
+    ]
+    assert await tariffs._fetch_latest_tariff("grid", "CD", date(2026, 1, 3)) == [0.3] * 24
+    assert provider.await_count == 3
+
+
+async def test_failed_tariff_record_fetch_can_be_retried(monkeypatch):
+    tariffs._tariff_cache.clear()
+    provider = AsyncMock(
+        side_effect=[
+            RuntimeError("provider unavailable"),
+            [
+                {"ValidFrom": "2026-01-01T00:00:00", "ValidTo": None, "Price1": 0},
+            ],
+        ]
+    )
+    monkeypatch.setattr(tariffs, "eds_get", provider)
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await tariffs._fetch_latest_tariff("grid", "CD", date(2026, 1, 1))
+    assert await tariffs._fetch_latest_tariff("grid", "CD", date(2026, 1, 1)) == [0] * 24
+    assert provider.await_count == 2

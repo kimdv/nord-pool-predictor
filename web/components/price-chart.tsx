@@ -14,6 +14,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { CombinedPoint } from "@/hooks/use-area-data";
+import PriceHistorySummary from "./price-history-summary";
+import type { PriceRange } from "@/lib/price-history";
 import { formatCopenhagenDateTime } from "@/lib/copenhagen-time";
 
 const AXIS_TIME_FORMAT: Intl.DateTimeFormatOptions = {
@@ -23,8 +25,10 @@ const AXIS_TIME_FORMAT: Intl.DateTimeFormatOptions = {
 export default function PriceChart({
   data,
   productionHorizon,
+  historicalRange,
 }: {
   data: CombinedPoint[];
+  historicalRange: PriceRange | null;
   productionHorizon?: string | null;
 }) {
   const [showUncertainty, setShowUncertainty] = useState(true);
@@ -103,6 +107,7 @@ export default function PriceChart({
           </button>
         </label>
       </div>
+      <PriceHistorySummary range={historicalRange} />
       {hasMissingPrices && (
         <p role="status" className="text-sm text-amber-700 mb-4">
           Prognosen dækker endnu ikke alle de næste 7 dage. Manglende priser vises som huller.
@@ -162,6 +167,34 @@ export default function PriceChart({
               iconType="circle"
               iconSize={8}
             />
+            {historicalRange && (
+              <ReferenceLine
+                y={historicalRange.min}
+                ifOverflow="extendDomain"
+                stroke="#64748b"
+                strokeDasharray="3 4"
+                label={{
+                  value: historicalRange.min === historicalRange.max ? "Laveste/højeste · 7 dage" : "Laveste · 7 dage",
+                  position: "insideBottomRight",
+                  fill: "#475569",
+                  fontSize: 11,
+                }}
+              />
+            )}
+            {historicalRange && historicalRange.max !== historicalRange.min && (
+              <ReferenceLine
+                y={historicalRange.max}
+                ifOverflow="extendDomain"
+                stroke="#98601d"
+                strokeDasharray="7 4"
+                label={{
+                  value: "Højeste · 7 dage",
+                  position: "insideTopRight",
+                  fill: "#98601d",
+                  fontSize: 11,
+                }}
+              />
+            )}
             {nowTimestamp && nowTimestamp !== cutoffTimestamp && (
               <ReferenceLine
                 x={nowTimestamp}
