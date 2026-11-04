@@ -67,7 +67,7 @@ docker compose logs -f app
 
 On first startup the worker will:
 1. Run database migrations
-2. Backfill 365 days of historical data (prices, weather, production, cross-border flows)
+2. Backfill 365 days of historical data (prices, production, cross-border flows)
 3. Train initial models for DK1 and DK2
 4. Run the first forecast
 
@@ -354,9 +354,11 @@ after that run's issuance, even when its scheduled publication was earlier.
 On each start the worker checks every configured area independently. Existing
 models are reused only when their feature set and all quantile artifacts are
 usable; missing or expired forecasts are regenerated. If training is required,
-idempotent backfills restore the full configured history rather than trusting
-another area's newest timestamp. Per-area failures are recorded as a failed
-bootstrap request, and a restart resumes the remaining areas.
+idempotent price, production and cross-border backfills restore the full configured
+history rather than trusting another area's newest timestamp. Training uses
+issuance-safe weather forecasts, so archive-weather observations are not fetched
+or required. Per-area failures are recorded as a failed bootstrap request, and a
+restart resumes the remaining areas.
 Replacement forecasts require a complete eight-day quarter-hour price history
 for their area. Bootstrap checks persisted coverage even when ingestion returns
 successfully, and missing history does not block recovery for other areas.

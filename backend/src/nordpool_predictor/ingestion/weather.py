@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -14,7 +14,6 @@ from nordpool_predictor.database import get_session
 logger = logging.getLogger(__name__)
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
-ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 HOURLY_VARS = "temperature_2m,wind_speed_10m,cloud_cover,precipitation,shortwave_radiation"
 SOURCE = "open_meteo"
 MAX_RETRIES = 3
@@ -110,25 +109,6 @@ async def _upsert_forecasts(rows: list[dict[str, Any]], issued_at: datetime) -> 
     return len(rows)
 
 
-async def _upsert_observations(rows: list[dict[str, Any]]) -> int:
-    if not rows:
-        return 0
-
-    stmt = text("""
-        INSERT INTO weather_observations
-            (area, ts, temperature_c, wind_speed_ms,
-             cloud_cover_pct, precipitation_mm, solar_irradiance_wm2, source)
-        VALUES
-            (:area, :ts, :temperature_c, :wind_speed_ms,
-             :cloud_cover_pct, :precipitation_mm, :solar_irradiance_wm2, :source)
-        ON CONFLICT (area, ts, source) DO NOTHING
-    """)
-    async with get_session() as session:
-        await session.execute(stmt, rows)
-        await session.commit()
-    return len(rows)
-
-
 async def ingest_weather_forecasts(*, area: str | None = None) -> None:
     """Fetch the latest forecasts for every configured weather point."""
     points = _collect_weather_points(area)
@@ -157,51 +137,3 @@ async def ingest_weather_forecasts(*, area: str | None = None) -> None:
             logger.info("Ingested %d forecast rows for %s", count, wp.id)
 
     logger.info("Weather forecast ingestion complete: %d total rows", total)
-
-
-async def backfill_weather(days: int = 365, *, area: str | None = None) -> None:
-    """Fetch historical weather observations for every configured weather point."""
-    points = _collect_weather_points(area)
-    if not points:
-        logger.warning("No weather points configured; skipping weather backfill")
-        return
-
-    now = datetime.now(UTC)
-    total = 0
-
-    async with httpx.AsyncClient() as client:
-        for _area_code, wp in points:
-            chunk_start = now - timedelta(days=days)
-            while chunk_start < now:
-                chunk_end = min(chunk_start + timedelta(days=30), now)
-                params = {
-                    "latitude": str(wp.lat),
-                    "longitude": str(wp.lon),
-                    "start_date": chunk_start.strftime("%Y-%m-%d"),
-                    "end_date": chunk_end.strftime("%Y-%m-%d"),
-                    "hourly": HOURLY_VARS,
-                    "timezone": "UTC",
-                }
-                data = await _request_with_retry(client, ARCHIVE_URL, params)
-                rows = _parse_hourly(data, wp.id)
-                if not rows:
-                    logger.warning(
-                        "No archive data for %s (%s→%s)",
-                        wp.id,
-                        chunk_start.date(),
-                        chunk_end.date(),
-                    )
-                    chunk_start = chunk_end
-                    continue
-                count = await _upsert_observations(rows)
-                total += count
-                logger.info(
-                    "Backfill %s %s→%s: %d rows",
-                    wp.id,
-                    chunk_start.date(),
-                    chunk_end.date(),
-                    count,
-                )
-                chunk_start = chunk_end
-
-    logger.info("Weather backfill complete: %d total rows", total)

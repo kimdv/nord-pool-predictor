@@ -15,7 +15,7 @@ from nordpool_predictor.ingestion.production import (
     ingest_production_actuals,
     ingest_production_forecasts,
 )
-from nordpool_predictor.ingestion.weather import backfill_weather, ingest_weather_forecasts
+from nordpool_predictor.ingestion.weather import ingest_weather_forecasts
 from nordpool_predictor.ml.predict import (
     PRICE_HISTORY_DAYS,
     ModelUnavailableError,
@@ -157,14 +157,8 @@ async def bootstrap() -> None:
     async def train_area(area: str) -> None:
         models[area] = await train_models(area, production_backfill=production_backfill)
 
-    for area in needs_training:
-        history_ready = await attempt(
-            f"{area} weather backfill",
-            backfill_weather,
-            days=settings.training_window_days,
-            area=area,
-        )
-        if shared_history_ready and history_ready:
+    if shared_history_ready:
+        for area in needs_training:
             await attempt(f"{area} training", train_area, area)
 
     # Existing models skip historical backfills. Refresh observation feeds too,

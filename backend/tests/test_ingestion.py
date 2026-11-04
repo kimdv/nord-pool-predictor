@@ -14,18 +14,14 @@ from nordpool_predictor.ingestion.production import (
 from nordpool_predictor.ingestion.weather import _parse_hourly
 
 
-@pytest.mark.parametrize("operation", ["ingest_weather_forecasts", "backfill_weather"])
-async def test_weather_requests_can_be_scoped_to_one_area(test_settings, operation):
+async def test_weather_requests_can_be_scoped_to_one_area(test_settings):
     from nordpool_predictor.ingestion import weather
 
     with (
         patch.object(weather, "get_settings", return_value=test_settings),
         patch.object(weather, "_request_with_retry", AsyncMock(return_value={})) as request,
     ):
-        kwargs = {"area": "DK2"}
-        if operation == "backfill_weather":
-            kwargs["days"] = 1
-        await getattr(weather, operation)(**kwargs)
+        await weather.ingest_weather_forecasts(area="DK2")
     request.assert_awaited_once()
     assert request.await_args.args[2]["latitude"] == "55.0"
 
