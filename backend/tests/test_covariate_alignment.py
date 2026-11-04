@@ -29,25 +29,3 @@ def test_interleaved_covariates_keep_observation_priority_and_expire_gaps(kind):
     assert pd.isna(result[column].iloc[11])  # 75 minutes after the last source sample.
     assert pd.isna(result[column].iloc[-1])
     assert result.index.equals(index)
-
-
-def test_crossborder_observation_flows_and_net_import_expire_after_one_hour():
-    index = pd.date_range("2026-01-01", periods=6, freq="15min", tz="UTC")
-    obs = pd.DataFrame(
-        {
-            "connection": ["DK1-DE", "DK1-NO2"],
-            "ts": [index[0], index[0]],
-            "flow_mw": [30.0, -10.0],
-        }
-    )
-    with (
-        patch.object(features, "_get_sync_engine"),
-        patch.object(features, "_query_crossborder_obs", return_value=obs),
-        patch.object(features, "_query_crossborder_fc", return_value=obs.iloc[:0]),
-    ):
-        result = features.add_crossborder_features(pd.DataFrame(index=index), "DK1")
-
-    for column, value in [("flow_DK1-DE", 30), ("flow_DK1-NO2", -10), ("net_import_mw", 20)]:
-        assert result[column].iloc[:5].tolist() == [value] * 5
-        assert pd.isna(result[column].iloc[5])
-    assert result.index.equals(index)

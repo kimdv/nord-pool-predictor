@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from nordpool_predictor.config import get_settings
+from nordpool_predictor.ingestion.crossborder import EXCHANGE_COLUMNS, SOURCE
 
 
 def issuance_times(index: pd.DatetimeIndex, value: datetime | pd.Series) -> pd.Series:
@@ -59,21 +60,48 @@ def load_asof_covariates(
             "MAX(availability_basis) AS _production_basis"
         )
     elif kind == "crossborder":
-        with engine.connect() as conn:
-            owners = json.dumps(
-                list(
-                    conn.execute(
-                        text(
-                            "SELECT DISTINCT connection FROM crossborder_forecasts "
-                            "WHERE connection LIKE :area"
-                        ),
-                        {"area": f"%{area}%"},
-                    ).scalars()
-                )
+        connections = {
+            connection
+            for mapping in EXCHANGE_COLUMNS.values()
+            for connection in mapping.values()
+            if area in connection.split("-")
+        }
+        owners = json.dumps(
+            [
+                {"id": connection, "direction": -1 if connection.endswith(f"-{area}") else 1}
+                for connection in sorted(connections)
+            ]
+        )
+        query = text("""
+            WITH targets AS (
+                SELECT * FROM jsonb_to_recordset(CAST(:targets AS jsonb))
+                    AS t(ts timestamptz, issued_at timestamptz)
+            ), connections AS (
+                SELECT * FROM jsonb_to_recordset(CAST(:owners AS jsonb))
+                    AS c(id text, direction integer)
             )
-        table, owner = "crossborder_forecasts", "connection"
-        fields = "flow_mw"
-        aggregates = "SUM(flow_mw) AS net_import_mw"
+            SELECT t.ts, snapshot.observed_net_import_mw
+            FROM targets t
+            LEFT JOIN LATERAL (
+                SELECT SUM(o.flow_mw * c.direction) AS observed_net_import_mw
+                FROM connections c JOIN crossborder_observations o ON o.connection = c.id
+                WHERE o.source = :source AND o.created_at <= t.issued_at
+                  AND o.ts <= t.issued_at - INTERVAL '1 hour'
+                  AND o.ts >= t.issued_at - INTERVAL '26 hours'
+                GROUP BY o.ts
+                HAVING COUNT(o.flow_mw) = (SELECT COUNT(*) FROM connections)
+                ORDER BY o.ts DESC LIMIT 1
+            ) snapshot ON TRUE
+            ORDER BY t.ts
+        """)
+        with engine.connect() as conn:
+            values = pd.read_sql(
+                query,
+                conn,
+                params={"targets": targets, "owners": owners, "source": SOURCE},
+                parse_dates=["ts"],
+            )
+        return df.join(values.set_index("ts"), how="left")
     else:
         raise ValueError(f"Unknown covariate kind: {kind}")
 
@@ -114,7 +142,6 @@ def load_asof_covariates(
                 "solar_irradiance_mean",
             ],
             "production": ["wind_mw", "solar_mw"],
-            "crossborder": ["net_import_mw"],
         }[kind]
         for column in columns:
             df[column] = np.nan

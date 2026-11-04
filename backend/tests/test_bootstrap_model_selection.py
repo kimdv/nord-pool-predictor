@@ -12,9 +12,9 @@ from nordpool_predictor.ml import predict, train
 from nordpool_predictor.scheduler import bootstrap
 
 
-@pytest.mark.parametrize("features", ["v1", "v2-asof"])
+@pytest.mark.parametrize("features", ["v1", "v2-asof", "v3-copenhagen"])
 @pytest.mark.parametrize("pinned", [False, True])
-async def test_pre_copenhagen_models_are_not_usable(database, features, pinned):
+async def test_previous_feature_sets_are_not_usable(database, features, pinned):
     async with database.begin() as conn:
         await conn.execute(
             text("""
@@ -50,7 +50,7 @@ async def test_bootstrap_forecasts_only_with_the_validated_model(
             text("""
                 INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
                     feature_set_version, trained_at, artifact_path, is_active)
-                VALUES (:version, 'test', 'DK1', 'direct', 'v3-copenhagen',
+                VALUES (:version, 'test', 'DK1', 'direct', 'v4-crossborder-history',
                     :trained, :path, :active)
             """),
             [

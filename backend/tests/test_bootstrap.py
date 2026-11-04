@@ -480,7 +480,8 @@ async def test_ready_models_reject_missing_artifacts(database):
             text("""
             INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
                 feature_set_version, trained_at, artifact_path, is_active)
-            VALUES ('test', 'test', 'DK1', 'direct', 'v3-copenhagen', NOW(), '/missing', TRUE)
+            VALUES ('test', 'test', 'DK1', 'direct', 'v4-crossborder-history',
+                NOW(), '/missing', TRUE)
         """)
         )
     with patch("nordpool_predictor.ml.predict._load_models", side_effect=FileNotFoundError):

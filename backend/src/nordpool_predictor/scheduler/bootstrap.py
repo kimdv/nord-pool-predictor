@@ -34,7 +34,7 @@ async def ready_models() -> dict[str, str]:
                 await session.execute(
                     text("""
             SELECT area, model_version, artifact_path FROM model_versions
-            WHERE is_active = TRUE AND feature_set_version = 'v3-copenhagen'
+            WHERE is_active = TRUE AND feature_set_version = 'v4-crossborder-history'
             ORDER BY trained_at DESC, model_version DESC
         """)
                 )

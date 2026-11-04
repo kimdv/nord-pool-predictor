@@ -280,7 +280,7 @@ async def train_models(
                 "model_type": "lgbm_quantile",
                 "area": area,
                 "horizon_strategy": "direct",
-                "feature_set_version": "v3-copenhagen",
+                "feature_set_version": "v4-crossborder-history",
                 "trained_at": now,
                 "metrics_json": json.dumps(metrics),
                 "artifact_path": artifact_path,
@@ -332,7 +332,8 @@ async def _has_usable_active_model(area: str) -> bool:
                 await session.execute(
                     text("""
             SELECT model_version, artifact_path FROM model_versions
-            WHERE area = :area AND is_active = TRUE AND feature_set_version = 'v3-copenhagen'
+            WHERE area = :area AND is_active = TRUE
+              AND feature_set_version = 'v4-crossborder-history'
             ORDER BY trained_at DESC, model_version DESC
         """),
                     {"area": area},

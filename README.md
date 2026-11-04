@@ -39,7 +39,7 @@ All data sources are free and require no API keys:
 - **Prices**: [Energi Data Service](https://api.energidataservice.dk/) — hourly DKK/MWh spot prices for DK1 and DK2
 - **Weather**: [Open-Meteo](https://open-meteo.com/) — temperature, wind speed, cloud cover, precipitation, solar irradiation for a configurable list of weather points across Denmark
 - **Production**: Energi Data Service — actual and forecast wind/solar power production
-- **Cross-border flows**: Energi Data Service — electricity flows between DK and neighbouring zones
+- **Cross-border observations**: Energi Data Service — free, keyless hourly electricity exchange measurements used as historical model inputs
 
 ## Quick Start
 
@@ -320,19 +320,34 @@ waits for the current job; configure a suitable grace period for long training.
 
 ### Feature availability
 
-Feature set `v3-copenhagen` derives hour, quarter-hour, weekday, month, weekend,
+Feature set `v4-crossborder-history` derives hour, quarter-hour, weekday, month, weekend,
 and Danish-holiday features in `Europe/Copenhagen`, including daylight saving
 changes. Storage and feature-matrix indexes remain UTC. It uses price rolling
-statistics anchored strictly before issuance and selects weather, production,
-and cross-border forecast snapshots
-available no later than that issuance. Production feature readers share the
+statistics anchored strictly before issuance and selects weather and production
+forecast snapshots available no later than that issuance. Production feature readers
+share the
 `production_feature_snapshots` compatibility view: legacy aggregate snapshots use
 their recorded `created_at` as conservative availability; component-backed snapshots
 use their observation-based `issued_at`. Stored values and timestamps remain unchanged.
-Historical observations are not substituted for future covariates.
-Training, forecast selection, and worker readiness accept only `v3-copenhagen`.
-Earlier models, including `v2-asof` models with UTC calendar features, are excluded;
-worker bootstrap retrains them before generating new forecasts. Historical models
+Cross-border `observed_net_import_mw` is the latest complete hourly net import
+known at issuance, shared by all future targets at that issuance. Every connection
+for the area must be present for the same completed hour, first collected no later
+than issuance and at most 26 hours old (measured from the interval start, matching
+operational freshness). Imports are positive; the shared Great Belt measurement is
+stored once from DK1 and sign-reversed for DK2. Future flows and the old residual-load
+proxy are not model inputs. The valid wind-plus-solar total remains available.
+
+The free, keyless [Energinet source](https://api.energidataservice.dk/meta/dataset/GenerationProdTypeExchange)
+publishes MWh for hourly intervals (equivalent to average MW). Initial measurements
+arrive after the interval ends; the endpoint later returns revised settlement data
+without original vintages. First-seen values and receipt times therefore remain
+immutable. A backfill collected today cannot become available to a historical
+issuance. Training accepts entirely absent or sparse cross-border history until
+observations accumulate.
+Stored cross-border forecast rows are ignored, and observation history is preserved.
+Training, forecast selection, and worker readiness accept only `v4-crossborder-history`.
+Earlier models, including `v3-copenhagen` models with forecast-only cross-border
+inputs, are excluded; worker bootstrap retrains them before generating new forecasts. Historical models
 and forecasts remain stored.
 
 Training metrics report non-null wind/solar sample counts, coverage fractions, and
