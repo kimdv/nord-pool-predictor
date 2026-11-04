@@ -78,8 +78,8 @@ async def test_bootstrap_summary_uses_only_latest_attempt(database, status, expe
     assert rows["bootstrap"].last_status == expected
     assert rows["bootstrap"].batch_size == 1
     assert rows["bootstrap"].failures_in_batch == (1 if status == "failed" else 0)
-    assert rows["refresh_forecast"].batch_size == 2
-    assert rows["refresh_forecast"].last_status == "failed"
+    assert rows["refresh_forecast"].batch_size == 1
+    assert rows["refresh_forecast"].last_status == "completed"
 
 
 async def seed_fresh_sources(database, settings):

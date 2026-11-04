@@ -3,6 +3,7 @@ import DashboardContent from "@/components/dashboard-content";
 import BackendUnavailable from "@/components/backend-unavailable";
 
 export default async function DashboardPage() {
+  const summaryAsOf = Date.now();
   let areas;
   let health;
 
@@ -23,5 +24,5 @@ export default async function DashboardPage() {
     }),
   );
 
-  return <DashboardContent areaData={areaData} sources={health.sources} />;
+  return <DashboardContent areaData={areaData} sources={health.sources} summaryAsOf={summaryAsOf} />;
 }

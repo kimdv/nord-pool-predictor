@@ -140,12 +140,8 @@ export default function GridCompanySelector({
         if (controller.signal.aborted) return;
         setCodes(data);
         setLoading(false);
-        const residential = data.find(
-          (t) =>
-            /nettarif c\b/i.test(t.note) || /^c[d ]?$/i.test(t.code),
-        );
-        if (residential && data.length > 1) {
-          handlePickCode(residential, c.gln, c.name);
+        if (data.length === 1) {
+          handlePickCode(data[0], c.gln, c.name);
         }
       })
       .catch(() => {

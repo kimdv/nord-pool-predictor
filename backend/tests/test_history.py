@@ -106,6 +106,31 @@ async def test_price_pages_preserve_all_rows(database, history_client):
     assert second["next_cursor"] is None
 
 
+@pytest.mark.parametrize("notes", [None, "Weather forecasts unavailable; using calendar features"])
+async def test_latest_forecast_preserves_history_notes(database, history_client, notes):
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+            INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
+                feature_set_version, trained_at, artifact_path)
+            VALUES ('test', 'test', 'DK1', 'direct', 'v2-asof', NOW(), '/tmp/test')
+        """)
+        )
+        await conn.execute(
+            text("""
+            INSERT INTO forecast_runs
+                (area, model_version, issued_at, horizon_steps, status, notes)
+            VALUES ('DK1', 'test', NOW(), 1, 'completed', :notes)
+        """),
+            {"notes": notes},
+        )
+    latest = await history_client.get("/api/forecasts/DK1/latest")
+    history = await history_client.get("/api/forecasts/DK1")
+    assert latest.status_code == history.status_code == 200
+    assert latest.json()["run_id"] == history.json()[0]["run_id"]
+    assert latest.json()["notes"] == history.json()[0]["notes"] == notes
+
+
 @pytest.mark.parametrize(
     "path",
     [

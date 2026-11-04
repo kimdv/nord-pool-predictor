@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import AreaSwitcher, { useSelectedArea } from "@/components/area-switcher";
 import StatCard from "@/components/stat-card";
@@ -11,6 +11,8 @@ import GridCompanySelector, {
   useGridSelection,
 } from "@/components/grid-company-selector";
 import { translateQuality } from "@/lib/quality-labels";
+import { createDashboardRefresh, PRICE_SLOT_MS } from "@/lib/dashboard-refresh";
+import RequestError from "@/components/request-error";
 import type { HAResponse, AreaInfo, SourceStatus, ForecastResponse } from "@/lib/api";
 
 function fmt(n: number | null | undefined): string {
@@ -26,26 +28,54 @@ interface AreaData {
 export default function DashboardContent({
   areaData,
   sources,
+  summaryAsOf,
 }: {
   areaData: AreaData[];
   sources: SourceStatus[];
+  summaryAsOf: number;
 }) {
   const router = useRouter();
   const { selected, select } = useSelectedArea();
   const { selection: gridSelection, update: updateGrid } = useGridSelection();
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [summaryAtRefreshStart, setSummaryAtRefreshStart] = useState<number | null>(null);
+  const summaryAsOfRef = useRef(summaryAsOf);
+  const [refreshing, startTransition] = useTransition();
+  const refreshRef = useRef<ReturnType<typeof createDashboardRefresh> | null>(null);
   const [forecast, setForecast] = useState<ForecastResponse | null>(null);
   const handleForecast = useCallback((f: ForecastResponse | null) => setForecast(f), []);
-  const refreshDashboard = useCallback(() => {
-    setRefreshVersion((version) => version + 1);
-    router.refresh();
+  const refreshDashboard = useCallback(() => refreshRef.current?.request(), []);
+
+  useEffect(() => {
+    summaryAsOfRef.current = summaryAsOf;
+  }, [summaryAsOf]);
+
+  useEffect(() => {
+    const refresh = createDashboardRefresh(() => {
+      setSummaryAtRefreshStart(summaryAsOfRef.current);
+      startTransition(() => {
+        setRefreshVersion((version) => version + 1);
+        router.refresh();
+      });
+    });
+    refreshRef.current = refresh;
+    if (Math.floor(summaryAsOf / PRICE_SLOT_MS) < Math.floor(Date.now() / PRICE_SLOT_MS)) refresh.request();
+    return () => {
+      refresh.dispose();
+      refreshRef.current = null;
+    };
   }, [router]);
+
+  useEffect(() => {
+    if (!refreshing) refreshRef.current?.complete();
+  }, [refreshing, refreshVersion]);
 
   const current = areaData.find((d) => d.info.code === selected) ?? areaData[0];
 
-  const attributes = current?.ha?.attributes;
+  const summaryIsCurrent = refreshing || summaryAtRefreshStart !== summaryAsOf;
+  const attributes = summaryIsCurrent ? current?.ha?.attributes : undefined;
   const overview = (
-    <aside className="today-summary" aria-label="Dagens spotpriser">
+    <aside className="today-summary" aria-label="Dagens spotpriser" aria-busy={refreshing}>
       <div className="current-price">
         <div className="summary-heading"><span className="live-dot" aria-hidden="true" />{attributes?.current_price_source === "forecast" ? "Estimeret spotpris nu" : "Spotpris lige nu"}</div>
         <p className="current-price-value">{fmt(attributes?.current_price)}<span>DKK/kWh</span></p>
@@ -61,7 +91,7 @@ export default function DashboardContent({
       </dl>
       <div className="summary-footnote">Spotpriser uden tariffer, afgifter og moms. Dagens minimum og maksimum er i DKK/kWh.</div>
       {attributes && <div className="quality-note">Prognosekvalitet <span>{translateQuality(attributes.forecast_quality)}</span></div>}
-      {!attributes && <p className="summary-footnote" role="status">Prisdata er endnu ikke tilgængelige for {selected}.</p>}
+      {!attributes && <RequestError message="Kunne ikke hente aktuelle spotpriser." onRetry={refreshDashboard} retrying={refreshing} />}
     </aside>
   );
 

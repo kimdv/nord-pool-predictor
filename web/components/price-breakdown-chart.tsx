@@ -86,7 +86,8 @@ export default function PriceBreakdownChart({
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const historyEnd = historyWindow(new Date(nowMs)).end;
-  const currentKey = gln && code ? `${area}:${gln}:${code}` : null;
+  const today = formatCopenhagenDateTime(new Date(), { year: "numeric", month: "2-digit", day: "2-digit" });
+  const currentKey = gln && code ? `${area}:${gln}:${code}:${today}` : null;
   if (currentKey !== prevKey) {
     setPrevKey(currentKey);
     setData(null);
@@ -121,7 +122,7 @@ export default function PriceBreakdownChart({
     return () => {
       controller.abort();
     };
-  }, [area, gln, code, refreshVersion, retryVersion, historyEnd]);
+  }, [area, gln, code, refreshVersion, retryVersion, historyEnd, today]);
 
   useEffect(() => {
     if (!gln || !code) return;
