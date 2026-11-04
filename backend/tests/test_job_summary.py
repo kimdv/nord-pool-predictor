@@ -33,10 +33,16 @@ async def test_long_request_retains_earlier_area_failure(database):
     assert await jobs_summary() == [summary]
 
 
-@pytest.mark.parametrize("status", ["pending", "running", "completed", "failed"])
+@pytest.mark.parametrize(
+    "status", ["pending", "running", "cancelling", "cancelled", "completed", "failed"]
+)
 async def test_latest_request_owns_status_and_timestamps(database, status):
     started = None if status == "pending" else datetime(2026, 11, 1, 4, tzinfo=UTC)
-    finished = datetime(2026, 11, 1, 5, tzinfo=UTC) if status in {"completed", "failed"} else None
+    finished = (
+        datetime(2026, 11, 1, 5, tzinfo=UTC)
+        if status in {"completed", "failed", "cancelled"}
+        else None
+    )
     async with database.begin() as conn:
         await conn.execute(
             text("""

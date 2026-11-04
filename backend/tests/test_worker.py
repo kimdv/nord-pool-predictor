@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import runpy
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from nordpool_predictor.scheduler.queue import claim_job, enqueue_job
-from nordpool_predictor.worker import execute_next, run_with_worker_lock, worker_lock
+from nordpool_predictor.scheduler.queue import cancel_job, claim_job, enqueue_job, finish_request
+from nordpool_predictor.worker import (
+    execute_next,
+    run_job_process,
+    run_with_worker_lock,
+    worker_lock,
+)
 
 
 async def test_concurrent_submissions_are_deduplicated_and_claimed_once(database):
@@ -54,6 +60,7 @@ def test_module_entrypoint_uses_canonical_worker():
             new=MagicMock(return_value=result),
         ) as run_worker,
         patch("asyncio.run") as asyncio_run,
+        patch("sys.argv", ["worker"]),
     ):
         runpy.run_path(worker_module.__file__, run_name="__main__")
 
@@ -100,11 +107,16 @@ async def test_worker_stops_in_flight_work_after_lock_session_ends(database):
 
 async def test_worker_persists_failure_and_accepts_a_later_retry(database):
     job_id = await enqueue_job("ingest_prices")
+    await claim_job()
     with patch(
         "nordpool_predictor.scheduler.jobs.job_ingest_prices",
         AsyncMock(side_effect=RuntimeError("upstream unavailable")),
     ):
-        assert await execute_next()
+        async with worker_lock() as connection:
+            pid = (await connection.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+            with pytest.raises(RuntimeError, match="upstream unavailable"):
+                await run_job_process("ingest_prices", str(job_id), pid)
+    await finish_request(job_id, "Job process exited (1)")
     async with database.connect() as conn:
         row = (
             (
@@ -119,6 +131,150 @@ async def test_worker_persists_failure_and_accepts_a_later_retry(database):
         assert row["status"] == "failed"
         assert row["error"] == "upstream unavailable"
     assert await enqueue_job("ingest_prices") is not None
+
+
+async def test_cancellation_stops_process_and_releases_queue_slot(database):
+    from nordpool_predictor.api.routers.jobs import jobs_summary
+    from nordpool_predictor.scheduler.jobs import _log_job
+
+    job_id = await enqueue_job("retrain_model")
+    started = asyncio.Event()
+    processes = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def start_process(*args, **kwargs):
+        await _log_job("retrain_model", "running")
+        process = await spawn(
+            sys.executable,
+            "-c",
+            "import asyncio, time; asyncio.run(asyncio.to_thread(time.sleep, 3600))",
+            **kwargs,
+        )
+        processes.append(process)
+        started.set()
+        return process
+
+    async with worker_lock():
+        with patch("nordpool_predictor.worker.asyncio.create_subprocess_exec", start_process):
+            task = asyncio.create_task(execute_next())
+            try:
+                await asyncio.wait_for(started.wait(), timeout=5)
+                assert await cancel_job("retrain_model") == "cancelling"
+                assert await cancel_job("retrain_model") == "cancelling"
+                assert await enqueue_job("retrain_model") is None
+                assert (await jobs_summary())[0].last_status == "cancelling"
+                assert await asyncio.wait_for(task, timeout=5)
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+    assert processes[0].returncode == -9
+    assert (await jobs_summary())[0].last_status == "cancelled"
+    async with database.connect() as conn:
+        request = (
+            (
+                await conn.execute(
+                    text("SELECT status, finished_at FROM job_requests WHERE job_id = :id"),
+                    {"id": job_id},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert request["status"] == "cancelled"
+        assert request["finished_at"] is not None
+        assert (
+            await conn.execute(text("SELECT status FROM job_runs"))
+        ).scalar_one() == "cancelled"
+    assert await enqueue_job("retrain_model") is not None
+
+
+async def test_cancel_pending_job_does_not_execute_or_overwrite_cancellation(database):
+    job_id = await enqueue_job("ingest_weather")
+    assert await cancel_job("ingest_weather") == "cancelled"
+    assert await claim_job() is None
+    await finish_request(job_id)
+    async with database.connect() as conn:
+        assert (
+            await conn.execute(
+                text("SELECT status FROM job_requests WHERE job_id = :id"), {"id": job_id}
+            )
+        ).scalar_one() == "cancelled"
+    assert await enqueue_job("ingest_weather") is not None
+
+
+async def test_cancel_clears_legacy_orphaned_run_history(database):
+    from nordpool_predictor.api.routers.jobs import jobs_summary
+    from nordpool_predictor.scheduler.jobs import _log_job
+
+    await _log_job("refresh_forecast", "running")
+    assert await cancel_job("refresh_forecast") == "cancelled"
+    assert (await jobs_summary())[0].last_status == "cancelled"
+    assert await cancel_job("refresh_forecast") is None
+
+
+async def test_completed_job_wins_a_late_cancellation(database):
+    job_id = await enqueue_job("ingest_prices")
+    await claim_job()
+    await finish_request(job_id)
+    assert await cancel_job("ingest_prices") is None
+
+
+async def test_child_rejects_a_worker_without_the_ownership_lock(database):
+    async with database.connect() as conn:
+        pid = (await conn.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+    with patch("nordpool_predictor.worker.run_job", new_callable=AsyncMock) as operation:
+        with pytest.raises(RuntimeError, match="lock session lost"):
+            await run_job_process("ingest_prices", "unused", pid)
+    operation.assert_not_awaited()
+
+
+async def test_child_stops_when_its_parent_releases_ownership(database):
+    entered = asyncio.Event()
+
+    async def child(pid):
+        async with worker_lock(pid):
+            entered.set()
+            await asyncio.Event().wait()
+
+    with patch("nordpool_predictor.worker.os._exit") as terminate_process:
+        async with worker_lock() as connection:
+            pid = (await connection.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+            task = asyncio.create_task(child(pid))
+            await asyncio.wait_for(entered.wait(), timeout=5)
+        with pytest.raises(RuntimeError, match="lock session lost"):
+            await asyncio.wait_for(task, timeout=5)
+        terminate_process.assert_called_once_with(1)
+
+
+async def test_restart_finishes_interrupted_cancellation(database):
+    from nordpool_predictor.scheduler.jobs import _log_job
+    from nordpool_predictor.worker import run_worker
+
+    job_id = await enqueue_job("retrain_model")
+    await claim_job()
+    await _log_job("retrain_model", "running")
+    await cancel_job("retrain_model")
+    with (
+        patch.object(asyncio.get_running_loop(), "add_signal_handler"),
+        patch("nordpool_predictor.worker.start_scheduler"),
+        patch("nordpool_predictor.worker.stop_scheduler"),
+        patch(
+            "nordpool_predictor.worker.execute_next", side_effect=RuntimeError("stop test worker")
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="stop test worker"):
+            await run_worker()
+    async with database.connect() as conn:
+        assert (
+            await conn.execute(
+                text("SELECT status FROM job_requests WHERE job_id = :id"), {"id": job_id}
+            )
+        ).scalar_one() == "cancelled"
+        assert (
+            await conn.execute(text("SELECT status FROM job_runs"))
+        ).scalar_one() == "cancelled"
+    assert await enqueue_job("retrain_model") is not None
 
 
 async def test_bootstrap_is_claimed_before_other_pending_work(database):

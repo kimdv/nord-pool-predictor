@@ -8,11 +8,19 @@ export function hasNewlyFinishedJobs(
   // the first client poll already sees its completion.
   if (!previous) {
     const bootstrap = current.bootstrap;
-    return bootstrap?.last_status === "completed" || bootstrap?.last_status === "failed";
+    return (
+      bootstrap?.last_status === "completed" ||
+      bootstrap?.last_status === "failed" ||
+      bootstrap?.last_status === "cancelled"
+    );
   }
 
   return Object.values(current).some((job) => {
-    if (job.last_status !== "completed" && job.last_status !== "failed") {
+    if (
+      job.last_status !== "completed" &&
+      job.last_status !== "failed" &&
+      job.last_status !== "cancelled"
+    ) {
       return false;
     }
 

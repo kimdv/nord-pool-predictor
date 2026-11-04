@@ -98,7 +98,7 @@ async def health_check() -> HealthResponse:
             bootstrap_result = await session.execute(
                 text(
                     "SELECT EXISTS (SELECT 1 FROM job_requests WHERE job_name = 'bootstrap' "
-                    "AND status IN ('pending', 'running'))"
+                    "AND status IN ('pending', 'running', 'cancelling'))"
                 )
             )
             bootstrapping = bool(bootstrap_result.scalar())

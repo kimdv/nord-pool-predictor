@@ -305,8 +305,15 @@ holds a PostgreSQL advisory lock for its lifetime. A second worker exits without
 executing jobs. API processes can scale independently.
 
 Manual triggers return HTTP 202 with a persistent `job_id`. Poll
-`GET /api/jobs/requests/{job_id}` for pending/running/completed/failed status.
-Duplicate queued or running jobs return HTTP 409. Pending jobs survive restarts;
+`GET /api/jobs/requests/{job_id}` for pending/running/cancelling/cancelled/completed/failed status.
+Cancel queued or running work with the dashboard's **Annuller** button or
+`POST /api/jobs/cancel/{job_name}` (including `bootstrap`). Pending requests are
+cancelled immediately; running requests enter `cancelling` until the worker has
+killed and reaped their job process, normally within a second. Cancellation keeps
+already committed data and does not roll back finished areas or published models.
+Stale running history can also be cleared with this endpoint. Deploy the API and
+worker together so both use the cancellation protocol.
+Duplicate queued, running or cancelling jobs return HTTP 409. Pending jobs survive restarts;
 interrupted running jobs are marked failed when the worker restarts. Scheduled
 runs enqueue the same job types and share those duplicate controls. Shutdown
 waits for the current job; configure a suitable grace period for long training.
