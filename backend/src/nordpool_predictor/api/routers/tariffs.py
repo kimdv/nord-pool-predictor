@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from datetime import time as dtime
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import AwareDatetime
 from sqlalchemy import text
 
 from nordpool_predictor.api.schemas.tariffs import (
@@ -68,15 +69,26 @@ async def price_breakdown(
     area: str,
     gln: str = Query(..., description="Grid company GLN number"),
     code: str = Query(..., description="Tariff ChargeTypeCode (e.g. CD)"),
+    history_end: AwareDatetime | None = None,
 ) -> PriceBreakdownResponse:
-    """Hourly price breakdown for today, combining spot price with all tariffs."""
+    """Today's breakdown, optionally with the preceding 168 hours of actual prices."""
     _validate_gln(gln)
     _validate_code(code)
     settings = get_settings()
     if area not in settings.area_codes:
         raise HTTPException(status_code=404, detail=f"Unknown area: {area}")
 
-    today_date = datetime.now(CPH_TZ).date()
+    now = datetime.now(UTC)
+    if history_end is not None:
+        history_end = history_end.astimezone(UTC)
+        current_slot = now.replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
+        if history_end > current_slot or history_end.timestamp() % 900:
+            raise HTTPException(
+                status_code=422,
+                detail="history_end must be a past or current quarter-hour boundary",
+            )
+
+    today_date = now.astimezone(CPH_TZ).date()
     today_local = datetime.combine(today_date, dtime.min, tzinfo=CPH_TZ)
     tomorrow_local = datetime.combine(today_date + timedelta(days=1), dtime.min, tzinfo=CPH_TZ)
     today_start = today_local.astimezone(UTC)
@@ -134,9 +146,43 @@ async def price_breakdown(
         logger.exception("Failed to build price breakdown")
         raise HTTPException(status_code=502, detail="Could not build price breakdown")
 
+    historical_slots = []
+    if history_end is not None:
+        history_start = history_end - timedelta(hours=168)
+        async with get_session() as session:
+            result = await session.execute(
+                text(
+                    "SELECT ts, price_dkk_kwh FROM price_observations "
+                    "WHERE area = :area AND ts >= :start AND ts < :end ORDER BY ts"
+                ),
+                {"area": area, "start": history_start, "end": history_end},
+            )
+            history_rows = result.mappings().all()
+        historical_prices = {
+            row["ts"].astimezone(UTC).isoformat(): row["price_dkk_kwh"]
+            for row in history_rows
+        }
+        days = sorted({row["ts"].astimezone(CPH_TZ).date() for row in history_rows})
+        for day in days:
+            try:
+                daily_slots = (
+                    slots if day == today_date else await build_price_breakdown(
+                        area, gln, code, historical_prices, day=day
+                    )
+                )
+            except Exception:
+                logger.exception("Could not build historical price breakdown for %s", day)
+                continue
+            historical_slots.extend(
+                SlotBreakdown(**slot) for slot in daily_slots
+                if history_start <= datetime.fromisoformat(slot["ts"]) < history_end
+                and slot["spot_source"] == "actual"
+            )
+
     return PriceBreakdownResponse(
         area=area,
         grid_company_gln=gln,
         charge_type_code=code,
         slots=[SlotBreakdown(**s) for s in slots],
+        historical_slots=historical_slots,
     )

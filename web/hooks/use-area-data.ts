@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { fetchJson, fetchOptionalJson } from "@/lib/client-api";
 import { buildCombinedData, priceChartWindow, type CombinedPoint } from "@/lib/combined-price-data";
+import { historicalRange, historyWindow, type PriceRange } from "@/lib/price-history";
 import type { AreaCode } from "@/components/area-switcher";
 import type {
   ForecastResponse,
@@ -15,6 +16,7 @@ export type { CombinedPoint } from "@/lib/combined-price-data";
 
 export interface AreaDetailData {
   combined: CombinedPoint[];
+  historicalRange: PriceRange | null;
   forecast: ForecastResponse | null;
   productionHorizon: string | null;
   accuracy: AccuracyRecord[];
@@ -49,12 +51,13 @@ export function useAreaData(area: AreaCode, refreshVersion = 0) {
     async function load() {
       const now = new Date();
       const window = priceChartWindow(now);
-      const start = new Date(window.start).toISOString();
+      const history = historyWindow(now);
+      const start = new Date(history.start).toISOString();
       const end = new Date(window.end).toISOString();
       setLoading(true);
       const [prices, forecast, accuracy, benchmarks] = await Promise.allSettled([
         fetchJson<PricesResponse>(
-          `/api/backend/prices/${area}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+          `/api/backend/prices/${area}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&limit=5000`,
           options,
         ),
         fetchOptionalJson<ForecastResponse>(`/api/backend/forecasts/${area}/latest`, options),
@@ -82,6 +85,9 @@ export function useAreaData(area: AreaCode, refreshVersion = 0) {
         return {
           prices: nextPrices,
           combined: buildCombinedData(nextPrices, nextForecast, now),
+          historicalRange: historicalRange((nextPrices?.prices ?? []).map((point) => ({
+            ts: point.ts, value: point.price_dkk_kwh,
+          })), history.end),
           forecast: nextForecast,
           productionHorizon: nextForecast?.production_forecast_horizon ?? null,
           accuracy: accuracy.status === "fulfilled" ? accuracy.value : previous?.accuracy ?? [],

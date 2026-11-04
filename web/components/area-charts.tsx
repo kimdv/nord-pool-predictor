@@ -58,7 +58,7 @@ export default function AreaCharts({
             />
           )}
           {(!(errors.prices || errors.forecast) || data.combined.length > 0) && (
-            <PriceChart data={data.combined} productionHorizon={data.productionHorizon} />
+            <PriceChart data={data.combined} productionHorizon={data.productionHorizon} historicalRange={data.historicalRange} />
           )}
         </div>
       </div>

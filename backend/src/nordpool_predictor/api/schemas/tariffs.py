@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class GridCompany(BaseModel):
@@ -37,3 +37,4 @@ class PriceBreakdownResponse(BaseModel):
     grid_company_gln: str
     charge_type_code: str
     slots: list[SlotBreakdown]
+    historical_slots: list[SlotBreakdown] = Field(default_factory=list)
