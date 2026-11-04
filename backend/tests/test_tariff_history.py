@@ -37,15 +37,15 @@ def setup_history(monkeypatch, test_settings, mock_db_session):
 async def test_history_is_672_actual_slots_with_date_specific_tariffs(setup_history, instant):
     end = datetime.fromisoformat(instant)
     start = end - timedelta(hours=168)
-    rows = [{"ts": start + timedelta(minutes=15 * i), "price_dkk_kwh": 0.0}
-            for i in range(672)]
-    today = [r for r in rows if r["ts"].astimezone(router.CPH_TZ).date()
-             == end.astimezone(router.CPH_TZ).date()]
+    rows = [{"ts": start + timedelta(minutes=15 * i), "price_dkk_kwh": 0.0} for i in range(672)]
+    today = [
+        r
+        for r in rows
+        if r["ts"].astimezone(router.CPH_TZ).date() == end.astimezone(router.CPH_TZ).date()
+    ]
     setup_history.execute.side_effect = [result(today), result([]), result(rows)]
     with time_machine.travel(end, tick=False):
-        response = await router.price_breakdown(
-            "DK1", "5790000000000", "CD", history_end=end
-        )
+        response = await router.price_breakdown("DK1", "5790000000000", "CD", history_end=end)
     history = response.historical_slots
     assert len(history) == 672
     assert datetime.fromisoformat(history[0].ts) == start
@@ -84,18 +84,28 @@ async def test_no_history_parameter_preserves_today_only(setup_history):
     assert setup_history.execute.await_count == 2
 
 
-@pytest.mark.parametrize("end", [
-    "2026-11-04T12:01:00Z", "2026-11-04T12:00:01Z", "2026-11-04T12:15:00Z",
-    "2026-11-04T12:00:00",
-])
+@pytest.mark.parametrize(
+    "end",
+    [
+        "2026-11-04T12:01:00Z",
+        "2026-11-04T12:00:01Z",
+        "2026-11-04T12:15:00Z",
+        "2026-11-04T12:00:00",
+    ],
+)
 async def test_endpoint_rejects_invalid_history_end(setup_history, end):
     app = FastAPI()
     app.include_router(router.router)
     with time_machine.travel("2026-11-04T12:08:00Z", tick=False):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get("/api/tariffs/breakdown/DK1", params={
-                "gln": "5790000000000", "code": "CD", "history_end": end,
-            })
+            response = await client.get(
+                "/api/tariffs/breakdown/DK1",
+                params={
+                    "gln": "5790000000000",
+                    "code": "CD",
+                    "history_end": end,
+                },
+            )
     assert response.status_code == 422
     setup_history.execute.assert_not_awaited()
 
@@ -107,7 +117,10 @@ async def test_same_day_history_never_includes_forecast_fallback(setup_history):
     run.mappings.return_value.first.return_value = {"run_id": "test"}
     forecast = {"ts": end - timedelta(minutes=15), "predicted_price_dkk_kwh": -99.0}
     setup_history.execute.side_effect = [
-        result([actual]), run, result([forecast]), result([actual]),
+        result([actual]),
+        run,
+        result([forecast]),
+        result([actual]),
     ]
     with time_machine.travel(end, tick=False):
         response = await router.price_breakdown("DK1", "5790000000000", "CD", end)

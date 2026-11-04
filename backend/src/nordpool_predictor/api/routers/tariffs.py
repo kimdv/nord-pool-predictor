@@ -159,22 +159,22 @@ async def price_breakdown(
             )
             history_rows = result.mappings().all()
         historical_prices = {
-            row["ts"].astimezone(UTC).isoformat(): row["price_dkk_kwh"]
-            for row in history_rows
+            row["ts"].astimezone(UTC).isoformat(): row["price_dkk_kwh"] for row in history_rows
         }
         days = sorted({row["ts"].astimezone(CPH_TZ).date() for row in history_rows})
         for day in days:
             try:
                 daily_slots = (
-                    slots if day == today_date else await build_price_breakdown(
-                        area, gln, code, historical_prices, day=day
-                    )
+                    slots
+                    if day == today_date
+                    else await build_price_breakdown(area, gln, code, historical_prices, day=day)
                 )
             except Exception:
                 logger.exception("Could not build historical price breakdown for %s", day)
                 continue
             historical_slots.extend(
-                SlotBreakdown(**slot) for slot in daily_slots
+                SlotBreakdown(**slot)
+                for slot in daily_slots
                 if history_start <= datetime.fromisoformat(slot["ts"]) < history_end
                 and slot["spot_source"] == "actual"
             )
