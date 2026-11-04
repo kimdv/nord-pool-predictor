@@ -44,7 +44,6 @@ def test_rolling_features_use_prices_strictly_before_off_grid_issuance(minutes):
     [
         ("weather", "weather_forecasts", "area", "temperature_c", "temp_mean"),
         ("production", "production_forecasts", "area", "wind_mw", "wind_mw"),
-        ("crossborder", "crossborder_forecasts", "connection", "flow_mw", "net_import_mw"),
     ],
 )
 async def test_covariates_select_only_snapshots_available_at_each_issuance(
@@ -56,7 +55,7 @@ async def test_covariates_select_only_snapshots_available_at_each_issuance(
     field,
     feature,
 ):
-    source_owner = {"weather": "DK1_TEST", "production": "DK1", "crossborder": "DK1-DE"}[kind]
+    source_owner = {"weather": "DK1_TEST", "production": "DK1"}[kind]
     with sync_database.begin() as conn:
         conn.execute(
             text(f"""

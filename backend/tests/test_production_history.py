@@ -284,7 +284,8 @@ async def test_missing_history_cannot_deactivate_active_model(
             text("""
             INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
                 feature_set_version, trained_at, artifact_path, is_active)
-            VALUES ('existing', 'test', 'DK1', 'direct', 'v3-copenhagen', NOW(), '/tmp/test', TRUE)
+            VALUES ('existing', 'test', 'DK1', 'direct', 'v4-crossborder-history',
+                NOW(), '/tmp/test', TRUE)
         """)
         )
     with (

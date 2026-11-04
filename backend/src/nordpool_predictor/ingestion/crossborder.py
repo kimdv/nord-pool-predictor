@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -20,9 +21,12 @@ EXCHANGE_COLUMNS = {
         "ExchangeNorway": "DK1-NO2",
         "ExchangeSweden": "DK1-SE3",
         "ExchangeGreatBelt": "DK1-DK2",
+        "ExchangeNetherlands": "DK1-NL",
+        "ExchangeGreatBritain": "DK1-GB",
     },
     "DK2": {
         "ExchangeSweden": "DK2-SE4",
+        "ExchangeGermany": "DK2-DE",
     },
 }
 
@@ -47,11 +51,12 @@ def _parse_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not col_map:
             continue
 
-        ts = datetime.fromisoformat(str(raw_ts)).replace(tzinfo=UTC)
+        ts = datetime.fromisoformat(str(raw_ts))
+        ts = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
 
         for col_name, connection in col_map.items():
             flow = rec.get(col_name)
-            if flow is None:
+            if flow is None or not math.isfinite(float(flow)):
                 continue
             rows.append(
                 {
@@ -70,13 +75,15 @@ async def _upsert_flows(rows: list[dict[str, Any]]) -> int:
         return 0
     stmt = text("""
         INSERT INTO crossborder_observations
-            (connection, ts, flow_mw, capacity_mw, source)
+            (connection, ts, flow_mw, capacity_mw, source, created_at)
         VALUES
-            (:connection, :ts, :flow_mw, :capacity_mw, :source)
+            (:connection, :ts, :flow_mw, :capacity_mw, :source, :created_at)
         ON CONFLICT (connection, ts, source) DO NOTHING
     """)
+    received_at = datetime.now(UTC)
     async with get_session() as session:
-        await session.execute(stmt, rows)
+        # First-seen values and availability stay immutable when EDS later revises history.
+        await session.execute(stmt, [{**row, "created_at": received_at} for row in rows])
         await session.commit()
     return len(rows)
 

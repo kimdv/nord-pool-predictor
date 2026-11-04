@@ -232,7 +232,7 @@ ORDER BY fr.area;
 
 Acceptance:
 
-- Bootstrap completes and both areas have usable active `v3-copenhagen` models, with
+- Bootstrap completes and both areas have usable active `v4-crossborder-history` models, with
   model artifacts on the shared mount. No missing-driver failures appear.
 - Each latest successful run contains 768 quarter-hour values (seven days plus a
   one-day refresh buffer), has issuance no

@@ -430,84 +430,11 @@ def add_production_features(
 # ---------------------------------------------------------------------------
 
 
-def _query_crossborder_obs(
-    engine: Engine,
-    pattern: str,
-    ts_min: datetime,
-    ts_max: datetime,
-) -> pd.DataFrame:
-    query = text(
-        "SELECT connection, ts, AVG(flow_mw) AS flow_mw "
-        "FROM crossborder_observations "
-        "WHERE connection LIKE :pattern AND ts >= :ts_min AND ts <= :ts_max "
-        "GROUP BY connection, ts"
-    )
-    with engine.connect() as conn:
-        return pd.read_sql(
-            query,
-            conn,
-            params={"pattern": pattern, "ts_min": ts_min, "ts_max": ts_max},
-            parse_dates=["ts"],
-        )
-
-
-def _query_crossborder_fc(
-    engine: Engine,
-    pattern: str,
-    ts_min: datetime,
-    ts_max: datetime,
-) -> pd.DataFrame:
-    query = text(
-        "WITH latest AS ("
-        "  SELECT DISTINCT ON (connection, ts) connection, ts, flow_mw "
-        "  FROM crossborder_forecasts "
-        "  WHERE connection LIKE :pattern AND ts >= :ts_min AND ts <= :ts_max "
-        "  ORDER BY connection, ts, issued_at DESC"
-        ") SELECT * FROM latest"
-    )
-    with engine.connect() as conn:
-        return pd.read_sql(
-            query,
-            conn,
-            params={"pattern": pattern, "ts_min": ts_min, "ts_max": ts_max},
-            parse_dates=["ts"],
-        )
-
-
 def add_crossborder_features(
-    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series | None = None
+    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series
 ) -> pd.DataFrame:
-    """Per-connection flow and aggregate net-import feature."""
-    if issued_at is not None:
-        return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "crossborder")
-
-    engine = _get_sync_engine()
-    ts_min, ts_max = df.index.min(), df.index.max()
-    pattern = f"%{area}%"
-
-    obs = _query_crossborder_obs(engine, pattern, ts_min, ts_max)
-    fc = _query_crossborder_fc(engine, pattern, ts_min, ts_max)
-
-    combined = pd.concat([obs, fc], ignore_index=True)
-    combined = combined.drop_duplicates(subset=["connection", "ts"], keep="first")
-
-    if combined.empty:
-        logger.warning("No crossborder data for area %s", area)
-        df["net_import_mw"] = np.nan
-        return df
-
-    pivot = combined.pivot_table(
-        index="ts",
-        columns="connection",
-        values="flow_mw",
-        aggfunc="mean",
-    )
-    pivot.columns = [f"flow_{c}" for c in pivot.columns]
-    pivot["net_import_mw"] = pivot.sum(axis=1)
-
-    pivot = pivot.sort_index().reindex(df.index, method="ffill", tolerance=pd.Timedelta(hours=1))
-    df = df.join(pivot, how="left")
-    return df
+    """Latest complete observed hourly net import known at each issuance."""
+    return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "crossborder")
 
 
 # ---------------------------------------------------------------------------
@@ -525,12 +452,12 @@ def add_cross_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Residual-load proxy
+# Renewable supply
 # ---------------------------------------------------------------------------
 
 
 def add_residual_load_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Derived renewable-supply features and residual-load proxy."""
+    """Derived renewable-supply features."""
     wind = df.get("wind_mw")
     solar = df.get("solar_mw")
 
@@ -538,9 +465,6 @@ def add_residual_load_features(df: pd.DataFrame) -> pd.DataFrame:
         w = wind.fillna(0) if wind is not None else pd.Series(0, index=df.index)
         s = solar.fillna(0) if solar is not None else pd.Series(0, index=df.index)
         df["total_renewable_mw"] = w + s
-
-    if "total_renewable_mw" in df.columns and "net_import_mw" in df.columns:
-        df["residual_load_proxy_mw"] = df["net_import_mw"] - df["total_renewable_mw"]
 
     return df
 
