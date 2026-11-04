@@ -91,15 +91,19 @@ async def finish_request(job_id: UUID, error: str | None = None) -> None:
                 )
             await session.execute(
                 text("""
-                    UPDATE job_runs SET status = :status, finished_at = NOW()
-                    WHERE status = 'running' AND (
+                    UPDATE job_runs
+                    SET status = CASE WHEN created_at >= :started_at
+                                      THEN :status ELSE 'failed' END,
+                        finished_at = NOW()
+                    WHERE status = 'running' AND created_at <= :finished_at AND (
                         job_type = :name OR (:name = 'bootstrap' AND created_at >= :started_at)
                     )
                 """),
                 {
                     "name": request["job_name"],
                     "started_at": request["started_at"],
-                    "status": "cancelled" if request["status"] == "cancelled" else "failed",
+                    "finished_at": request["finished_at"],
+                    "status": request["status"],
                 },
             )
         await session.commit()
