@@ -140,7 +140,7 @@ async def run_forecast(
     # 1. Resolve the requested model without falling back to another version.
     query = (
         "SELECT model_version, artifact_path FROM model_versions "
-        "WHERE area = :area AND is_active = TRUE AND feature_set_version = 'v2-asof' "
+        "WHERE area = :area AND is_active = TRUE AND feature_set_version = 'v3-copenhagen' "
     )
     params = {"area": area}
     if model_version is not None:

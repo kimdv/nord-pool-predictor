@@ -320,15 +320,20 @@ waits for the current job; configure a suitable grace period for long training.
 
 ### Feature availability
 
-Feature set `v2-asof` uses price rolling statistics anchored strictly before
-issuance and selects weather, production, and cross-border forecast snapshots
+Feature set `v3-copenhagen` derives hour, quarter-hour, weekday, month, weekend,
+and Danish-holiday features in `Europe/Copenhagen`, including daylight saving
+changes. Storage and feature-matrix indexes remain UTC. It uses price rolling
+statistics anchored strictly before issuance and selects weather, production,
+and cross-border forecast snapshots
 available no later than that issuance. Production feature readers share the
 `production_feature_snapshots` compatibility view: legacy aggregate snapshots use
 their recorded `created_at` as conservative availability; component-backed snapshots
 use their observation-based `issued_at`. Stored values and timestamps remain unchanged.
 Historical observations are not substituted for future covariates.
-The migration deactivates older feature sets so the worker bootstrap retrains
-models with this contract before generating new forecasts.
+Training, forecast selection, and worker readiness accept only `v3-copenhagen`.
+Earlier models, including `v2-asof` models with UTC calendar features, are excluded;
+worker bootstrap retrains them before generating new forecasts. Historical models
+and forecasts remain stored.
 
 Training metrics report non-null wind/solar sample counts, coverage fractions, and
 snapshot availability provenance. Sparse history and a missing wind or solar input

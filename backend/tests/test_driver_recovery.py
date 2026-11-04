@@ -164,7 +164,7 @@ async def test_bootstrap_trains_registers_and_persists_forecasts(
             )
             assert {m["area"] for m in models} == {"DK1", "DK2"}
             for model in models:
-                assert model["feature_set_version"] == "v2-asof"
+                assert model["feature_set_version"] == "v3-copenhagen"
                 assert (tmp_path / model["artifact_path"]).is_file()
                 assert (
                     model["metrics_json"]["production_data"]["coverage"]["wind_mw"]["fraction"]

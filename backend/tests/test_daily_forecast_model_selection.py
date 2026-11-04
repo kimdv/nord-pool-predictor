@@ -34,11 +34,12 @@ async def active_candidates(database, test_settings):
                     "active": active,
                 }
                 for version, area, features, days, active in [
-                    ("older", "DK1", "v2-asof", 3, True),
-                    ("newest", "DK1", "v2-asof", 2, True),
+                    ("older", "DK1", "v3-copenhagen", 3, True),
+                    ("newest", "DK1", "v3-copenhagen", 2, True),
                     ("legacy", "DK1", "v1", 1, True),
-                    ("inactive", "DK1", "v2-asof", 0, False),
-                    ("foreign", "DK2", "v2-asof", 0, True),
+                    ("utc-calendar", "DK1", "v2-asof", 1, True),
+                    ("inactive", "DK1", "v3-copenhagen", 0, False),
+                    ("foreign", "DK2", "v3-copenhagen", 0, True),
                 ]
             ],
         )

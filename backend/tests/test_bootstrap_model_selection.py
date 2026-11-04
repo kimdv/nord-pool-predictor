@@ -8,8 +8,32 @@ import pandas as pd
 import pytest
 from sqlalchemy import text
 
-from nordpool_predictor.ml import predict
+from nordpool_predictor.ml import predict, train
 from nordpool_predictor.scheduler import bootstrap
+
+
+@pytest.mark.parametrize("features", ["v1", "v2-asof"])
+@pytest.mark.parametrize("pinned", [False, True])
+async def test_pre_copenhagen_models_are_not_usable(database, features, pinned):
+    async with database.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
+                    feature_set_version, trained_at, artifact_path, is_active)
+                VALUES ('legacy', 'test', 'DK1', 'direct', :features, NOW(), '/legacy', TRUE)
+            """),
+            {"features": features},
+        )
+
+    with patch.object(predict, "_load_models") as load:
+        assert await bootstrap.ready_models() == {}
+        assert await train._has_usable_active_model("DK1") is False
+        with pytest.raises(ValueError, match="compatible"):
+            await predict.run_forecast("DK1", model_version="legacy" if pinned else None)
+
+    load.assert_not_called()
+    async with database.connect() as conn:
+        assert (await conn.execute(text("SELECT COUNT(*) FROM forecast_runs"))).scalar() == 0
 
 
 @pytest.mark.parametrize(
@@ -26,7 +50,8 @@ async def test_bootstrap_forecasts_only_with_the_validated_model(
             text("""
                 INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
                     feature_set_version, trained_at, artifact_path, is_active)
-                VALUES (:version, 'test', 'DK1', 'direct', 'v2-asof', :trained, :path, :active)
+                VALUES (:version, 'test', 'DK1', 'direct', 'v3-copenhagen',
+                    :trained, :path, :active)
             """),
             [
                 {
