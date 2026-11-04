@@ -137,9 +137,7 @@
   .setting-field > .relative > button { max-width: calc(100vw - 40px); }
   .price-stage { grid-template-columns: minmax(0, 1fr); border-radius: 12px; }
   .today-summary { padding: 24px; }
-  .current-price { position: relative; }
   .current-price-value { font-size: 55px; margin-top: 12px; }
-  .price-context { position: absolute; right: 0; top: 3px; }
   .today-stats { display: grid; grid-template-columns: 1fr 1fr; margin-top: 20px; }
   .daily-range { display: contents; }
   .price-stat { padding-block: 14px; }

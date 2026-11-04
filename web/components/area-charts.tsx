@@ -37,7 +37,9 @@ export default function AreaCharts({
           {overview}
           <div className="forecast-panel"><ChartSkeleton height="h-96" /></div>
         </div>
-        <ChartSkeleton height="h-48" />
+        <section id="analyse" aria-label="Prognoseanalyse">
+          <ChartSkeleton height="h-48" />
+        </section>
         {children}
       </div>
     );
