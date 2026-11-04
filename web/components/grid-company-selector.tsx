@@ -222,7 +222,7 @@ export default function GridCompanySelector({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full mt-1 z-50 w-80 rounded-lg bg-white border border-gray-200 shadow-lg overflow-hidden">
+        <div className="absolute left-0 min-[761px]:left-auto min-[761px]:right-0 top-full mt-1 z-50 w-80 max-[760px]:w-full rounded-lg bg-white border border-gray-200 shadow-lg overflow-hidden">
           {step === "company" && (
             <>
               <div className="p-2 border-b border-gray-100">

@@ -10,20 +10,12 @@ import PriceBreakdownChart from "@/components/price-breakdown-chart";
 import GridCompanySelector, {
   useGridSelection,
 } from "@/components/grid-company-selector";
-import { translateQuality, qualityColor } from "@/lib/quality-labels";
+import { translateQuality } from "@/lib/quality-labels";
 import type { HAResponse, AreaInfo, SourceStatus, ForecastResponse } from "@/lib/api";
 
 function fmt(n: number | null | undefined): string {
   if (n == null) return "—";
   return n.toFixed(2);
-}
-
-function priceColor(price: number | null | undefined): string {
-  if (price == null) return "slate";
-  if (price <= 0.5) return "emerald";
-  if (price <= 1.5) return "blue";
-  if (price <= 3.0) return "amber";
-  return "red";
 }
 
 interface AreaData {
@@ -51,95 +43,50 @@ export default function DashboardContent({
 
   const current = areaData.find((d) => d.info.code === selected) ?? areaData[0];
 
-  return (
-    <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Oversigt</h2>
-          <p className="text-sm text-gray-500 mt-0.5">
-            Elprisprognose for Danmark
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <GridCompanySelector
-            selection={gridSelection}
-            onSelect={updateGrid}
-          />
-          <AreaSwitcher selected={selected} onSelect={select} />
-        </div>
+  const attributes = current?.ha?.attributes;
+  const overview = (
+    <aside className="today-summary" aria-label="Dagens spotpriser">
+      <div className="current-price">
+        <div className="summary-heading"><span className="live-dot" aria-hidden="true" />{attributes?.current_price_source === "forecast" ? "Estimeret spotpris nu" : "Spotpris lige nu"}</div>
+        <p className="current-price-value">{fmt(attributes?.current_price)}<span>DKK/kWh</span></p>
+        <p className="price-context">{selected === "DK1" ? "Vestdanmark" : "Østdanmark"} / {selected}</p>
       </div>
+      <dl className="today-stats">
+        <StatCard label="Næste kvarter" value={fmt(attributes?.next_slot_price)} unit="DKK/kWh" />
+        <div className="daily-range">
+          <StatCard label="Laveste i dag" value={fmt(attributes?.today_min)} color="emerald" />
+          <StatCard label="Højeste i dag" value={fmt(attributes?.today_max)} color="amber" />
+        </div>
+        <StatCard label="Gennemsnit i dag" value={fmt(attributes?.today_average)} unit="DKK/kWh" />
+      </dl>
+      <div className="summary-footnote">Spotpriser uden tariffer, afgifter og moms. Dagens minimum og maksimum er i DKK/kWh.</div>
+      {attributes && <div className="quality-note">Prognosekvalitet <span>{translateQuality(attributes.forecast_quality)}</span></div>}
+      {!attributes && <p className="summary-footnote" role="status">Prisdata er endnu ikke tilgængelige for {selected}.</p>}
+    </aside>
+  );
 
-      {current && (
-        <section className="space-y-4">
-          {current.ha ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-              <StatCard
-                label="Nuværende pris"
-                value={fmt(current.ha.attributes.current_price)}
-                unit="DKK/kWh"
-                color={priceColor(current.ha.attributes.current_price)}
-              />
-              <StatCard
-                label="Næste kvarter"
-                value={fmt(current.ha.attributes.next_slot_price)}
-                unit="DKK/kWh"
-                color={priceColor(current.ha.attributes.next_slot_price)}
-              />
-              <StatCard
-                label="I dag min"
-                value={fmt(current.ha.attributes.today_min)}
-                unit="DKK/kWh"
-                color="emerald"
-              />
-              <StatCard
-                label="I dag maks"
-                value={fmt(current.ha.attributes.today_max)}
-                unit="DKK/kWh"
-                color="red"
-              />
-              <StatCard
-                label="I dag gns"
-                value={fmt(current.ha.attributes.today_average)}
-                unit="DKK/kWh"
-                color="slate"
-              />
-              <StatCard
-                label="Prognosekvalitet"
-                value={translateQuality(current.ha.attributes.forecast_quality)}
-                color={qualityColor(current.ha.attributes.forecast_quality)}
-              />
-            </div>
-          ) : (
-            <div className="card p-6 text-sm text-gray-400">
-              Data ikke tilgængelig for {current.info.code}
-            </div>
-          )}
-        </section>
-      )}
-
-      <PriceBreakdownChart
-        area={selected}
-        gln={gridSelection?.gln ?? null}
-        code={gridSelection?.code ?? null}
-        refreshVersion={refreshVersion}
-      />
-
-      <section className="space-y-4">
-        <h2 className="text-lg font-semibold text-gray-900">
-          7-dags prognose
-        </h2>
-        <AreaCharts
-          area={selected}
-          refreshVersion={refreshVersion}
-          onForecast={handleForecast}
-        />
+  return (
+    <div className="dashboard-shell">
+      <section className="dashboard-intro" aria-labelledby="dashboard-title">
+        <div>
+          <h1 id="dashboard-title">Elprisen, syv dage frem.</h1>
+          <p>Følg prisprognosen, undersøg usikkerheden og mål modellens præcision.</p>
+        </div>
+        <div className="dashboard-settings">
+          <div className="setting-field"><span>Prisområde</span><AreaSwitcher selected={selected} onSelect={select} /></div>
+          <div className="setting-field"><span>Dit netselskab</span><GridCompanySelector selection={gridSelection} onSelect={updateGrid} /></div>
+        </div>
       </section>
 
-      <JobStatus
-        sources={sources}
-        forecast={forecast}
-        onJobsFinished={refreshDashboard}
-      />
+      <section id="prisoverblik" aria-label="Prisoverblik">
+        <AreaCharts area={selected} refreshVersion={refreshVersion} onForecast={handleForecast} overview={overview}>
+          <PriceBreakdownChart area={selected} gln={gridSelection?.gln ?? null} code={gridSelection?.code ?? null} refreshVersion={refreshVersion} />
+        </AreaCharts>
+      </section>
+
+      <section id="datakilder" className="data-section" aria-label="Datakilder og opdateringer">
+        <JobStatus sources={sources} forecast={forecast} onJobsFinished={refreshDashboard} />
+      </section>
     </div>
   );
 }

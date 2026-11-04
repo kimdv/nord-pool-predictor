@@ -11,10 +11,11 @@ export default function BackendUnavailable() {
   }, [router]);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-16 text-center">
-      <h2 className="text-xl font-semibold text-gray-900 mb-2">Backend ikke tilgængelig</h2>
-      <p className="text-sm text-gray-500">Forbindelsen forsøges igen automatisk.</p>
-      <button onClick={() => router.refresh()} className="mt-4 underline">Prøv igen</button>
+    <div className="connection-state">
+      <div className="connection-symbol" aria-hidden="true">~</div>
+      <h1>Vi kan ikke hente elpriserne lige nu.</h1>
+      <p className="text-sm text-gray-500">Forbindelsen til prisdata er afbrudt. Vi prøver igen automatisk hvert femte sekund.</p>
+      <button onClick={() => router.refresh()} className="retry-button">Prøv igen</button>
     </div>
   );
 }

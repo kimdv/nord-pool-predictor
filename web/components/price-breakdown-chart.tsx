@@ -29,11 +29,11 @@ interface Props {
 }
 
 const CATEGORIES = [
-  { key: "spot_price", label: "Spotpris", color: "#2563eb" },
-  { key: "grid_tariff", label: "Nettarif", color: "#059669" },
-  { key: "transport", label: "Transport", color: "#f59e0b" },
-  { key: "electricity_tax", label: "Elafgift", color: "#7c3aed" },
-  { key: "vat", label: "Moms (25%)", color: "#9ca3af" },
+  { key: "spot_price", label: "Spotpris", color: "#174d70" },
+  { key: "grid_tariff", label: "Nettarif", color: "#277a70" },
+  { key: "transport", label: "Transport", color: "#98601d" },
+  { key: "electricity_tax", label: "Elafgift", color: "#506f94" },
+  { key: "vat", label: "Moms (25%)", color: "#5d7482" },
 ] as const;
 
 type CategoryKey = (typeof CATEGORIES)[number]["key"];
@@ -145,12 +145,12 @@ export default function PriceBreakdownChart({
 
   if (!gln || !code) {
     return (
-      <div className="card p-6">
+      <div className="card tariff-empty p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-2">
           Elpriser i dag
         </h2>
         <p className="text-sm text-gray-400">
-          Vælg dit netselskab for at se den fulde prissammensætning.
+          Hvad koster strømmen på din regning? Vælg dit netselskab øverst for at se spotpris, nettarif, afgifter og moms.
         </p>
       </div>
     );
@@ -186,6 +186,7 @@ export default function PriceBreakdownChart({
               <button
                 key={cat.key}
                 onClick={() => toggleCategory(cat.key)}
+                aria-pressed={!isOff}
                 className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all ${
                   isOff
                     ? "border-gray-200 text-gray-400 bg-white"
@@ -212,17 +213,17 @@ export default function PriceBreakdownChart({
             data={chartData}
             margin={{ top: 5, right: 10, bottom: 5, left: 10 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+            <CartesianGrid vertical={false} stroke="#e4ecf0" />
             <XAxis
               dataKey="ts"
               tickFormatter={formatSlot}
-              tick={{ fill: "#9ca3af", fontSize: 11 }}
+              tick={{ fill: "#657c8a", fontSize: 11 }}
               axisLine={{ stroke: "#e5e7eb" }}
               tickLine={false}
               interval={3}
             />
             <YAxis
-              tick={{ fill: "#9ca3af", fontSize: 11 }}
+              tick={{ fill: "#657c8a", fontSize: 11 }}
               axisLine={false}
               tickLine={false}
               tickFormatter={(v: number) => v.toFixed(2)}
@@ -230,7 +231,7 @@ export default function PriceBreakdownChart({
                 value: "DKK/kWh",
                 angle: -90,
                 position: "insideLeft",
-                fill: "#9ca3af",
+                fill: "#657c8a",
                 fontSize: 12,
               }}
             />
@@ -290,6 +291,7 @@ export default function PriceBreakdownChart({
             )}
             {CATEGORIES.map((cat) => (
               <Bar
+                isAnimationActive={false}
                 key={cat.key}
                 dataKey={cat.key}
                 name={cat.key}
