@@ -111,8 +111,9 @@ async def get_latest_forecast(area: str) -> ForecastRunResponse:
     async with get_session() as session:
         run_result = await session.execute(
             text(
-                "SELECT run_id, area, model_version, issued_at, status "
-                "FROM latest_forecast_runs WHERE area = :area"
+                "SELECT latest.run_id, latest.area, latest.model_version, latest.issued_at, "
+                "latest.status, run.notes FROM latest_forecast_runs latest "
+                "JOIN forecast_runs run ON run.run_id = latest.run_id WHERE latest.area = :area"
             ),
             {"area": area},
         )
@@ -164,7 +165,7 @@ async def get_latest_forecast(area: str) -> ForecastRunResponse:
         model_version=run["model_version"],
         issued_at=run["issued_at"],
         status=run["status"],
-        notes=None,
+        notes=run["notes"],
         values=values,
         production_forecast_horizon=prod_horizon,
     )

@@ -34,12 +34,7 @@ class JobRunResponse(BaseModel):
 
 
 class JobSummary(BaseModel):
-    """Aggregated view of the most recent "batch" of a job type.
-
-    Several jobs (e.g. ``refresh_forecast``, ``retrain_model``) are fanned out
-    across all configured areas and create one ``job_runs`` row per area.  A
-    summary collapses those rows into a single status by looking at every row
-    started within a short window of the latest run for that job type."""
+    """Latest request outcome and its attempts, or one historical attempt."""
 
     model_config = {"from_attributes": True}
 

@@ -10,8 +10,6 @@ from nordpool_predictor.api.schemas.health import JobRunResponse, JobSummary
 from nordpool_predictor.database import get_session
 from nordpool_predictor.scheduler.queue import JOB_NAMES, enqueue_job
 
-BATCH_WINDOW_MINUTES = 10
-
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -76,62 +74,49 @@ async def running_jobs() -> dict[str, list[str]]:
         return {"running": list(result.scalars())}
 
 
-_SUMMARY_SQL = f"""
-WITH latest_bootstrap AS (
-    SELECT job_name, status, COALESCE(started_at, created_at) AS started_at, finished_at
-    FROM job_requests WHERE job_name = 'bootstrap'
-    ORDER BY created_at DESC, job_id DESC LIMIT 1
-), activity AS (
-    SELECT job_type, status, started_at, finished_at FROM job_runs WHERE job_type <> 'bootstrap'
-    UNION ALL
-    SELECT job_name, CASE WHEN status = 'pending' THEN 'running' ELSE status END,
-           COALESCE(started_at, created_at), finished_at
-    FROM job_requests WHERE status IN ('pending', 'running') AND job_name <> 'bootstrap'
-    UNION ALL
-    SELECT job_name, CASE WHEN status = 'pending' THEN 'running' ELSE status END,
-           started_at, finished_at FROM latest_bootstrap
-), latest AS (
-    SELECT job_type, MAX(started_at) AS max_started_at
-    FROM activity
-    WHERE started_at IS NOT NULL
-    GROUP BY job_type
-),
-batch AS (
-    SELECT jr.job_type, jr.status, jr.started_at, jr.finished_at
-    FROM activity jr
-    JOIN latest l ON l.job_type = jr.job_type
-    WHERE jr.started_at >= l.max_started_at - interval '{BATCH_WINDOW_MINUTES} minutes'
+_SUMMARY_SQL = """
+WITH latest_requests AS (
+    SELECT DISTINCT ON (job_name) * FROM job_requests
+    ORDER BY job_name, created_at DESC, job_id DESC
+), request_summaries AS (
+    SELECT
+        request.job_name AS job_type,
+        COALESCE(request.started_at, request.created_at) AS last_started_at,
+        request.finished_at AS last_finished_at,
+        CASE WHEN request.status = 'pending' THEN 'running' ELSE request.status END AS last_status,
+        CASE WHEN request.job_name = 'bootstrap' THEN 1
+             ELSE COUNT(attempt.job_id)::int END AS batch_size,
+        CASE WHEN request.job_name = 'bootstrap' THEN (request.status = 'failed')::int
+             ELSE COUNT(attempt.job_id) FILTER (WHERE attempt.status = 'failed')::int
+        END AS failures_in_batch
+    FROM latest_requests request
+    LEFT JOIN job_runs attempt ON attempt.job_type = request.job_name
+        AND attempt.created_at >= request.started_at
+        AND (request.finished_at IS NULL OR attempt.created_at <= request.finished_at)
+    GROUP BY request.job_id, request.job_name, request.created_at, request.started_at,
+             request.finished_at, request.status
+), historical_attempts AS (
+    SELECT DISTINCT ON (job_type)
+        job_type, started_at AS last_started_at, finished_at AS last_finished_at,
+        CASE WHEN status = 'pending' THEN 'running' ELSE status END AS last_status,
+        1 AS batch_size, (status = 'failed')::int AS failures_in_batch
+    FROM job_runs attempt
+    WHERE NOT EXISTS (
+        SELECT 1 FROM latest_requests request WHERE request.job_name = attempt.job_type
+    )
+    ORDER BY job_type, started_at DESC NULLS LAST, created_at DESC, job_id DESC
 )
 SELECT
-    job_type,
-    MAX(started_at) AS last_started_at,
-    MAX(finished_at) FILTER (WHERE finished_at IS NOT NULL) AS last_finished_at,
-    CASE
-        WHEN bool_or(status = 'running') THEN 'running'
-        WHEN bool_or(status = 'failed') THEN 'failed'
-        ELSE 'completed'
-    END AS last_status,
-    COUNT(*)::int AS batch_size,
-    COUNT(*) FILTER (WHERE status = 'failed')::int AS failures_in_batch
-FROM batch
-GROUP BY job_type
+    * FROM request_summaries
+UNION ALL
+SELECT * FROM historical_attempts
 ORDER BY job_type
 """
 
 
 @router.get("/summary", response_model=list[JobSummary])
 async def jobs_summary() -> list[JobSummary]:
-    """Return one entry per ``job_type`` summarising the most recent batch.
-
-    A "batch" is defined as every ``job_runs`` row whose ``started_at`` lies
-    within ``BATCH_WINDOW_MINUTES`` of the latest ``started_at`` for that
-    ``job_type``.  This collapses per-area fan-out jobs (``refresh_forecast``,
-    ``retrain_model``) into a single row whose status is:
-
-    * ``running``   — any row in the batch is still running
-    * ``failed``    — any row in the batch failed (and none are running)
-    * ``completed`` — all rows finished successfully
-    """
+    """Summarise the latest durable request, or a single historical attempt."""
     async with get_session() as session:
         result = await session.execute(text(_SUMMARY_SQL))
         rows = result.mappings().all()
