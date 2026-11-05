@@ -82,14 +82,25 @@ def recovery_mocks(test_settings):
 
 
 @pytest.mark.parametrize("failed", ["backfill_production", "backfill_crossborder"])
-async def test_backfill_failure_still_recovers_area_with_usable_model(recovery_mocks, failed):
+@pytest.mark.parametrize("models", [{}, {"DK1": "v1"}])
+async def test_optional_backfill_failure_still_trains_and_recovers_areas(
+    recovery_mocks, failed, models
+):
     recovery_mocks[failed].side_effect = RuntimeError("upstream failure")
-    with pytest.raises(RuntimeError, match="Bootstrap incomplete"):
+    with (
+        patch.object(module, "ready_models", AsyncMock(return_value=models)),
+        pytest.raises(RuntimeError, match="Bootstrap incomplete"),
+    ):
         await module.bootstrap()
-    recovery_mocks["train_models"].assert_not_awaited()
-    recovery_mocks["run_forecast"].assert_awaited_once_with(
-        "DK1", issued_at=ANY, model_version=ANY
-    )
+    assert [call.args[0] for call in recovery_mocks["train_models"].await_args_list] == [
+        area for area in ("DK1", "DK2") if area not in models
+    ]
+    assert [call.args[0] for call in recovery_mocks["run_forecast"].await_args_list] == [
+        "DK1",
+        "DK2",
+    ]
+    recovery_mocks["ingest_production_actuals"].assert_awaited_once_with()
+    recovery_mocks["ingest_crossborder_flows"].assert_awaited_once_with()
 
 
 async def test_bootstrap_pins_validated_and_newly_trained_model_versions(recovery_mocks):
