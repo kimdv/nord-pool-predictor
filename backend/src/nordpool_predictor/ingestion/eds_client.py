@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Any
 
 import httpx
+from sqlalchemy import text
+
+from nordpool_predictor.database import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -27,36 +29,39 @@ MAX_RETRIES = 5
 BACKOFF_BASE = 2.0
 RATE_LIMIT_WAIT = 65.0
 
-_last_request_by_dataset: dict[str, float] = {}
-_dataset_locks: dict[str, asyncio.Lock] = {}
-_meta_lock: asyncio.Lock | None = None
-
-
-async def _get_dataset_lock(dataset: str) -> asyncio.Lock:
-    """Return a per-dataset lock, creating one lazily if needed."""
-    global _meta_lock
-    if _meta_lock is None:
-        _meta_lock = asyncio.Lock()
-    async with _meta_lock:
-        if dataset not in _dataset_locks:
-            _dataset_locks[dataset] = asyncio.Lock()
-        return _dataset_locks[dataset]
-
 
 async def _enforce_rate_limit(dataset: str) -> None:
-    """Wait if we've hit the same dataset within the last 60 seconds.
-
-    Uses a per-dataset lock so different datasets can proceed in parallel.
-    """
-    lock = await _get_dataset_lock(dataset)
-    async with lock:
-        last = _last_request_by_dataset.get(dataset, 0.0)
-        elapsed = time.monotonic() - last
-        if elapsed < 60.0:
-            wait = 60.0 - elapsed + 1.0
+    """Serialize dataset requests across processes using the database clock."""
+    async with get_session() as session:
+        await session.execute(
+            text("""
+                INSERT INTO eds_request_limits (dataset, requested_at)
+                VALUES (:dataset, '-infinity') ON CONFLICT DO NOTHING
+            """),
+            {"dataset": dataset},
+        )
+        wait = (
+            await session.execute(
+                text("""
+                    SELECT GREATEST(0, EXTRACT(EPOCH FROM (
+                        requested_at + INTERVAL '61 seconds' - clock_timestamp()
+                    )))::double precision
+                    FROM eds_request_limits WHERE dataset = :dataset FOR UPDATE
+                """),
+                {"dataset": dataset},
+            )
+        ).scalar_one()
+        if wait > 0:
             logger.info("Rate-limit: waiting %.0fs before next %s request", wait, dataset)
             await asyncio.sleep(wait)
-        _last_request_by_dataset[dataset] = time.monotonic()
+        await session.execute(
+            text("""
+                UPDATE eds_request_limits SET requested_at = clock_timestamp()
+                WHERE dataset = :dataset
+            """),
+            {"dataset": dataset},
+        )
+        await session.commit()
 
 
 async def eds_get(
@@ -74,16 +79,15 @@ async def eds_get(
     """
     params.setdefault("timezone", "UTC")
 
-    if respect_rate_limit:
-        await _enforce_rate_limit(dataset)
-
     url = f"{API_BASE}/{dataset}"
     own_client = client is None
     if own_client:
         client = httpx.AsyncClient(timeout=60.0)
 
     try:
-        return await _request_with_retry(client, url, params, dataset)
+        return await _request_with_retry(
+            client, url, params, dataset, respect_rate_limit=respect_rate_limit
+        )
     finally:
         if own_client:
             await client.aclose()
@@ -94,8 +98,12 @@ async def _request_with_retry(
     url: str,
     params: dict[str, str],
     dataset: str,
+    *,
+    respect_rate_limit: bool = True,
 ) -> list[dict[str, Any]]:
     for attempt in range(1, MAX_RETRIES + 1):
+        if respect_rate_limit:
+            await _enforce_rate_limit(dataset)
         try:
             resp = await client.get(url, params=params, timeout=60.0)
             resp.raise_for_status()
@@ -112,7 +120,6 @@ async def _request_with_retry(
                     RATE_LIMIT_WAIT,
                 )
                 await asyncio.sleep(RATE_LIMIT_WAIT)
-                _last_request_by_dataset[dataset] = time.monotonic()
                 continue
             if attempt == MAX_RETRIES:
                 logger.error(

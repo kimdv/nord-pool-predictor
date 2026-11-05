@@ -713,12 +713,16 @@ async def test_exhausted_http_retries_raise_without_a_final_sleep(status):
     response = httpx.Response(status, request=httpx.Request("GET", "https://example.com/api"))
     client = AsyncMock(spec=httpx.AsyncClient)
     client.get.return_value = response
-    with patch("nordpool_predictor.ingestion.eds_client.asyncio.sleep", AsyncMock()) as sleep:
+    with (
+        patch("nordpool_predictor.ingestion.eds_client.asyncio.sleep", AsyncMock()) as sleep,
+        patch("nordpool_predictor.ingestion.eds_client._enforce_rate_limit", AsyncMock()) as rate,
+    ):
         with pytest.raises(httpx.HTTPStatusError) as error:
             await _request_with_retry(client, "https://example.com/api", {}, "TestDataset")
     assert error.value.response.status_code == status
     assert client.get.await_count == MAX_RETRIES
     assert sleep.await_count == MAX_RETRIES - 1
+    assert rate.await_count == MAX_RETRIES
 
 
 async def test_exhausted_upstream_failure_marks_the_ingestion_job_failed(database):
