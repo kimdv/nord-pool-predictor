@@ -418,7 +418,6 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
     from nordpool_predictor.api.routers import health
     from nordpool_predictor.ingestion import production
     from nordpool_predictor.ml.asof import load_asof_covariates
-    from nordpool_predictor.ml.features import _query_production_fc
 
     now = datetime.now(UTC)
     target = now.replace(minute=0, second=0, microsecond=0)
@@ -443,10 +442,6 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
         sync_database, pd.DataFrame(index=pd.DatetimeIndex([target])), "DK2", now, "production"
     )
     assert pd.isna(before["wind_mw"].iloc[0])
-    assert _query_production_fc(sync_database, "DK2", target, target)["wind_mw"].iloc[0] in {
-        88,
-        99,
-    }
     records = [
         {
             "PriceArea": area,
@@ -496,7 +491,6 @@ async def test_ingestion_does_not_let_legacy_stamps_mask_stale_area(
         "production",
     )
     assert values["wind_mw"].iloc[0] == 7
-    assert _query_production_fc(sync_database, "DK2", target, target)["wind_mw"].iloc[0] == 7
     from nordpool_predictor.api.routers import forecasts
 
     async with database.begin() as conn:

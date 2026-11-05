@@ -49,32 +49,6 @@ def _get_sync_engine() -> Engine:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _weather_point_ids(area: str) -> list[str]:
-    """Return weather-point IDs that belong to *area* (from config)."""
-    settings = get_settings()
-    area_cfg = settings.areas.get(area)
-    if area_cfg is None:
-        return []
-    return [wp.id for wp in area_cfg.weather_points]
-
-
-def _in_params(prefix: str, values: list[str]) -> tuple[str, dict[str, str]]:
-    """Build a parameterised ``IN (…)`` fragment.
-
-    Returns the placeholder SQL string and the matching params dict.
-    """
-    if not values:
-        return "NULL", {}
-    placeholders = ", ".join(f":{prefix}_{i}" for i in range(len(values)))
-    params = {f"{prefix}_{i}": v for i, v in enumerate(values)}
-    return placeholders, params
-
-
-# ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
 
@@ -223,117 +197,12 @@ def add_price_lag_features(df: pd.DataFrame) -> pd.DataFrame:
 # Weather features
 # ---------------------------------------------------------------------------
 
-_WEATHER_AGG_SQL = """\
-    AVG(temperature_c)                       AS temp_mean,
-    MIN(temperature_c)                       AS temp_min,
-    MAX(temperature_c)                       AS temp_max,
-    AVG(wind_speed_ms)                       AS wind_speed_mean,
-    MAX(wind_speed_ms)                       AS wind_speed_max,
-    AVG(precipitation_mm)                    AS precip_mean,
-    SUM(precipitation_mm)                    AS precip_sum,
-    AVG(cloud_cover_pct)                     AS cloud_cover_mean,
-    COALESCE(STDDEV(cloud_cover_pct), 0)     AS cloud_cover_std,
-    AVG(solar_irradiance_wm2)                AS solar_irradiance_mean"""
-
-_WEATHER_FEATURE_COLS = [
-    "temp_mean",
-    "temp_min",
-    "temp_max",
-    "wind_speed_mean",
-    "wind_speed_max",
-    "precip_mean",
-    "precip_sum",
-    "cloud_cover_mean",
-    "cloud_cover_std",
-    "solar_irradiance_mean",
-]
-
-
-def _query_weather_obs(
-    engine: Engine,
-    point_ids: list[str],
-    ts_min: datetime,
-    ts_max: datetime,
-) -> pd.DataFrame:
-    placeholders, params = _in_params("wp", point_ids)
-    params.update(ts_min=ts_min, ts_max=ts_max)
-    query = text(
-        f"SELECT ts, {_WEATHER_AGG_SQL} "  # noqa: S608
-        f"FROM weather_observations "
-        f"WHERE area IN ({placeholders}) AND ts >= :ts_min AND ts <= :ts_max "
-        f"GROUP BY ts ORDER BY ts"
-    )
-    with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params=params, parse_dates=["ts"])
-    if df.empty:
-        return pd.DataFrame(columns=_WEATHER_FEATURE_COLS)
-    return df.set_index("ts")
-
-
-def _query_weather_fc(
-    engine: Engine,
-    point_ids: list[str],
-    ts_min: datetime,
-    ts_max: datetime,
-) -> pd.DataFrame:
-    placeholders, params = _in_params("wp", point_ids)
-    params.update(ts_min=ts_min, ts_max=ts_max)
-    query = text(
-        f"WITH latest AS ("
-        f"  SELECT DISTINCT ON (area, ts) "
-        f"    area, ts, temperature_c, wind_speed_ms, cloud_cover_pct, "
-        f"    precipitation_mm, solar_irradiance_wm2 "
-        f"  FROM weather_forecasts "
-        f"  WHERE area IN ({placeholders}) AND ts >= :ts_min AND ts <= :ts_max "
-        f"  ORDER BY area, ts, issued_at DESC"
-        f") "
-        f"SELECT ts, {_WEATHER_AGG_SQL} "
-        f"FROM latest GROUP BY ts ORDER BY ts"
-    )
-    with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params=params, parse_dates=["ts"])
-    if df.empty:
-        return pd.DataFrame(columns=_WEATHER_FEATURE_COLS)
-    return df.set_index("ts")
-
 
 def add_weather_features(
-    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series | None = None
+    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series
 ) -> pd.DataFrame:
-    """Zone-level aggregated weather: observations first, forecasts as fallback."""
-    if issued_at is not None:
-        return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "weather")
-
-    point_ids = _weather_point_ids(area)
-    if not point_ids:
-        logger.warning("No weather points configured for area %s", area)
-        for col in _WEATHER_FEATURE_COLS:
-            df[col] = np.nan
-        return df
-
-    engine = _get_sync_engine()
-    ts_min, ts_max = df.index.min(), df.index.max()
-
-    obs = _query_weather_obs(engine, point_ids, ts_min, ts_max)
-
-    missing = df.index.difference(obs.index) if not obs.empty else df.index
-    if len(missing) > 0:
-        fc = _query_weather_fc(engine, point_ids, missing.min(), missing.max())
-        if obs.empty:
-            obs = fc
-        elif not fc.empty:
-            obs = pd.concat([obs, fc])
-            obs = obs[~obs.index.duplicated(keep="first")].sort_index()
-
-    if obs.empty:
-        logger.warning("No weather data available for area %s", area)
-        for col in _WEATHER_FEATURE_COLS:
-            df[col] = np.nan
-        return df
-
-    obs = obs.sort_index().reindex(df.index, method="ffill", tolerance=pd.Timedelta(hours=1))
-    df = df.join(obs, how="left")
-    return df
+    """Weather forecast snapshots available at issuance."""
+    return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "weather")
 
 
 # ---------------------------------------------------------------------------
@@ -341,88 +210,11 @@ def add_weather_features(
 # ---------------------------------------------------------------------------
 
 
-def _query_production_obs(
-    engine: Engine,
-    area: str,
-    ts_min: datetime,
-    ts_max: datetime,
-) -> pd.DataFrame:
-    query = text(
-        "SELECT ts, AVG(wind_mw) AS wind_mw, AVG(solar_mw) AS solar_mw "
-        "FROM production_observations "
-        "WHERE area = :area AND ts >= :ts_min AND ts <= :ts_max "
-        "GROUP BY ts ORDER BY ts"
-    )
-    with engine.connect() as conn:
-        df = pd.read_sql(
-            query,
-            conn,
-            params={"area": area, "ts_min": ts_min, "ts_max": ts_max},
-            parse_dates=["ts"],
-        )
-    if df.empty:
-        return pd.DataFrame(columns=["wind_mw", "solar_mw"])
-    return df.set_index("ts")
-
-
-def _query_production_fc(
-    engine: Engine,
-    area: str,
-    ts_min: datetime,
-    ts_max: datetime,
-) -> pd.DataFrame:
-    query = text(
-        "SELECT DISTINCT ON (ts) ts, wind_mw, solar_mw "
-        "FROM production_feature_snapshots "
-        "WHERE area = :area AND ts >= :ts_min AND ts <= :ts_max "
-        "ORDER BY ts, available_at DESC, issued_at DESC, source"
-    )
-    with engine.connect() as conn:
-        df = pd.read_sql(
-            query,
-            conn,
-            params={"area": area, "ts_min": ts_min, "ts_max": ts_max},
-            parse_dates=["ts"],
-        )
-    if df.empty:
-        return pd.DataFrame(columns=["wind_mw", "solar_mw"])
-    return df.set_index("ts")
-
-
 def add_production_features(
-    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series | None = None
+    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series
 ) -> pd.DataFrame:
-    """Wind and solar production (MW): observations first, forecasts as fallback."""
-    if issued_at is not None:
-        return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "production")
-
-    engine = _get_sync_engine()
-    ts_min, ts_max = df.index.min(), df.index.max()
-
-    obs = _query_production_obs(engine, area, ts_min, ts_max)
-
-    missing = df.index.difference(obs.index) if not obs.empty else df.index
-    if len(missing) > 0:
-        fc = _query_production_fc(engine, area, missing.min(), missing.max())
-        if obs.empty:
-            obs = fc
-        elif not fc.empty:
-            obs = pd.concat([obs, fc])
-            obs = obs[~obs.index.duplicated(keep="first")].sort_index()
-
-    if obs.empty:
-        logger.warning("No production data for area %s", area)
-        df["wind_mw"] = np.nan
-        df["solar_mw"] = np.nan
-        return df
-
-    obs = (
-        obs[["wind_mw", "solar_mw"]]
-        .sort_index()
-        .reindex(df.index, method="ffill", tolerance=pd.Timedelta(hours=1))
-    )
-    df = df.join(obs, how="left")
-    return df
+    """Production forecast snapshots available at issuance."""
+    return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "production")
 
 
 # ---------------------------------------------------------------------------
