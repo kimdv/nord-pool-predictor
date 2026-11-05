@@ -130,11 +130,12 @@ async def bootstrap() -> None:
         return True
 
     shared_history_ready = True
+    price_history_ready = True
     price_window_fetched_until: datetime | None = None
     production_backfill = ProductionHistoryBackfill()
     if needs_training:
-        # These sources fetch both areas together. A failure affects new training,
-        # but must not block forecast recovery for already usable models.
+        # Only price history is required for training; optional feed failures
+        # still trigger live-source recovery and remain visible in the outcome.
         for label, operation in (
             ("price backfill", backfill_prices),
             ("production backfill", backfill_production),
@@ -143,6 +144,8 @@ async def bootstrap() -> None:
             started_at = datetime.now(UTC)
             succeeded = await attempt(label, operation, days=settings.training_window_days)
             shared_history_ready = shared_history_ready and succeeded
+            if operation is backfill_prices:
+                price_history_ready = succeeded
             if (
                 operation is backfill_prices
                 and succeeded
@@ -157,7 +160,7 @@ async def bootstrap() -> None:
     async def train_area(area: str) -> None:
         models[area] = await train_models(area, production_backfill=production_backfill)
 
-    if shared_history_ready:
+    if price_history_ready:
         for area in needs_training:
             await attempt(f"{area} training", train_area, area)
 
