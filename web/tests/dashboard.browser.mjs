@@ -208,6 +208,8 @@ test("signals during a refresh produce only one trailing refresh", async () => {
 });
 
 test("Copenhagen midnight refreshes tariffs and a failure does not show yesterday's chart", async () => {
+  await page.clock.setFixedTime(new Date("2026-11-04T12:00:00Z"));
+  await page.reload();
   await page.getByRole("button", { name: "Vælg netselskab" }).click();
   await page.getByRole("button", { name: "En tarif", exact: true }).click();
   await page.getByRole("button", { name: "En tarif · Nettarif C", exact: true }).waitFor();
