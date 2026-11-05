@@ -10,13 +10,22 @@ import { chromium } from "playwright";
 const baseURL = process.env.BROWSER_TEST_URL ?? "http://127.0.0.1:3106";
 const codes = ["C", "B", "A"].map((code) => ({ code, note: `Nettarif ${code}`, description: "" }));
 let price, failHA, failTariff, haDelay, haRequests, tariffRequests;
+let jobSummaries, sources;
 let browser, context, page, runtimeErrors;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://test");
   let body = [];
   let status = 200;
   if (url.pathname === "/api/areas") body = [{ code: "DK1", label: "Vestdanmark", weather_points: [] }];
-  else if (url.pathname === "/api/health") body = { status: "ok", sources: [], degraded: false };
+  else if (url.pathname === "/api/health") body = { status: "ok", sources, degraded: false };
+  else if (url.pathname === "/api/jobs/summary") body = jobSummaries;
+  else if (url.pathname.startsWith("/api/jobs/cancel/") && req.method === "POST") {
+    const job = url.pathname.split("/").at(-1);
+    jobSummaries = jobSummaries.map((row) => row.job_type === job
+      ? { ...row, last_status: "cancelled", last_finished_at: new Date().toISOString() } : row);
+    status = 202;
+    body = { status: "cancelled", job };
+  }
   else if (url.pathname === "/api/ha/DK1") {
     haRequests++;
     await delay(haDelay);
@@ -58,6 +67,8 @@ beforeEach(async () => {
   price = 0.5;
   failHA = failTariff = false;
   haDelay = haRequests = tariffRequests = 0;
+  jobSummaries = [];
+  sources = [];
   context = await browser.newContext();
   page = await context.newPage();
   runtimeErrors = [];
@@ -67,6 +78,27 @@ beforeEach(async () => {
 });
 
 afterEach(() => assert.deepEqual(runtimeErrors, []));
+
+test("queued jobs show waiting and remain cancellable", async () => {
+  sources = [{ source: "prices", last_updated: null, is_stale: true }];
+  jobSummaries = ["ingest_prices", "refresh_forecast"].map((job_type) => ({ job_type, last_status: "pending",
+    last_started_at: new Date().toISOString(), last_finished_at: null,
+    batch_size: 0, failures_in_batch: 0 }));
+  await page.reload();
+  await page.getByText("Afventer", { exact: true }).first().waitFor();
+  assert.equal(await page.getByText("Afventer", { exact: true }).count(), 2);
+  assert.equal(await page.getByText("Kører", { exact: true }).count(), 0);
+  for (const job of jobSummaries) {
+    const cancel = page.getByRole("button", { name: `Annuller ${job.job_type}`, exact: true });
+    assert.equal(await cancel.isEnabled(), true);
+    const request = page.waitForRequest((req) =>
+      req.method() === "POST" && new URL(req.url()).pathname === `/api/backend/jobs/cancel/${job.job_type}`);
+    await cancel.click();
+    await request;
+    await page.getByRole("button", { name: `Start ${job.job_type}`, exact: true }).waitFor();
+  }
+  assert.equal(await page.getByText("Kører", { exact: true }).count(), 0);
+});
 
 async function openCodes() {
   await page.locator(".dashboard-settings").getByRole("button").last().click();

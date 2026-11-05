@@ -96,7 +96,7 @@ function RefreshButton({
   feedback: FeedbackState;
   onTrigger: (key: string, cancel?: boolean) => void;
 }) {
-  const running = status === "running" || status === "cancelling";
+  const active = status === "pending" || status === "running" || status === "cancelling";
   const cls =
     busy
       ? "border-blue-200 bg-blue-50 text-blue-400 cursor-wait"
@@ -108,13 +108,13 @@ function RefreshButton({
 
   return (
     <button
-      onClick={() => onTrigger(jobKey, running)}
+      onClick={() => onTrigger(jobKey, active)}
       disabled={busy || status === "cancelling"}
       className={`ml-auto inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium transition-all ${cls}`}
-      title={`${running ? "Annuller" : "Start"} ${jobKey}`}
-      aria-label={`${running ? "Annuller" : "Start"} ${jobKey}`}
+      title={`${active ? "Annuller" : "Start"} ${jobKey}`}
+      aria-label={`${active ? "Annuller" : "Start"} ${jobKey}`}
     >
-      {running ? (
+      {active ? (
         <span>{status === "cancelling" ? "Annullerer…" : "Annuller"}</span>
       ) : busy ? (
         <span className="inline-block h-3 w-3 rounded-full border-2 border-blue-300 border-t-transparent animate-spin" />
@@ -133,7 +133,7 @@ function RefreshButton({
           />
         </svg>
       )}
-      {feedback.text && (!running || feedback.kind === "error") && <span>{feedback.text}</span>}
+      {feedback.text && (!active || feedback.kind === "error") && <span>{feedback.text}</span>}
     </button>
   );
 }
@@ -219,7 +219,7 @@ export default function JobStatus({
   const anyRunning = useMemo(() => {
     if (triggering.size > 0) return true;
     return Object.values(summaries).some(
-      (s) => s.last_status === "running" || s.last_status === "cancelling",
+      (s) => s.last_status === "pending" || s.last_status === "running" || s.last_status === "cancelling",
     );
   }, [triggering, summaries]);
 
@@ -310,13 +310,18 @@ export default function JobStatus({
                 </span>
               )}
               {jobKey && (
-                <RefreshButton
-                  jobKey={jobKey}
-                  busy={busy}
-                  status={summary?.last_status}
-                  feedback={feedback[jobKey] ?? IDLE_FEEDBACK}
-                  onTrigger={trigger}
-                />
+                <>
+                  {summary?.last_status === "pending" && (
+                    <span className="text-xs text-gray-500">{STATUS_LABELS.pending}</span>
+                  )}
+                  <RefreshButton
+                    jobKey={jobKey}
+                    busy={busy}
+                    status={summary?.last_status}
+                    feedback={feedback[jobKey] ?? IDLE_FEEDBACK}
+                    onTrigger={trigger}
+                  />
+                </>
               )}
             </div>
           );
@@ -393,6 +398,9 @@ export default function JobStatus({
                 <span className="rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-xs font-medium text-amber-600">
                   {status === "cancelling" ? STATUS_LABELS.cancelling : STATUS_LABELS.running}
                 </span>
+              )}
+              {status === "pending" && (
+                <span className="text-xs text-gray-500">{STATUS_LABELS.pending}</span>
               )}
               {status === "cancelled" && (
                 <span className="text-xs text-gray-500">{STATUS_LABELS.cancelled}</span>

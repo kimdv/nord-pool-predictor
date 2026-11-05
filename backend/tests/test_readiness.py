@@ -49,7 +49,7 @@ async def test_bootstrap_completion_remains_in_job_summary(database, status):
     "status,expected",
     [
         ("completed", "completed"),
-        ("pending", "running"),
+        ("pending", "pending"),
         ("running", "running"),
         ("failed", "failed"),
     ],

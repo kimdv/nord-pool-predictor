@@ -63,7 +63,7 @@ async def test_latest_request_owns_status_and_timestamps(database, status):
         """)
         )
     [summary] = await jobs_summary()
-    assert summary.last_status == ("running" if status == "pending" else status)
+    assert summary.last_status == status
     assert summary.last_started_at == (started or datetime(2026, 11, 1, 3, 59, tzinfo=UTC))
     assert summary.last_finished_at == finished
     assert summary.batch_size == (0 if status == "pending" else 1)

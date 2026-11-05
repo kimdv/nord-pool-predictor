@@ -94,7 +94,7 @@ WITH latest_requests AS (
         request.job_name AS job_type,
         COALESCE(request.started_at, request.created_at) AS last_started_at,
         request.finished_at AS last_finished_at,
-        CASE WHEN request.status = 'pending' THEN 'running' ELSE request.status END AS last_status,
+        request.status AS last_status,
         CASE WHEN request.job_name = 'bootstrap' THEN 1
              ELSE COUNT(attempt.job_id)::int END AS batch_size,
         CASE WHEN request.job_name = 'bootstrap' THEN (request.status = 'failed')::int
@@ -109,7 +109,7 @@ WITH latest_requests AS (
 ), historical_attempts AS (
     SELECT DISTINCT ON (job_type)
         job_type, started_at AS last_started_at, finished_at AS last_finished_at,
-        CASE WHEN status = 'pending' THEN 'running' ELSE status END AS last_status,
+        status AS last_status,
         1 AS batch_size, (status = 'failed')::int AS failures_in_batch
     FROM job_runs attempt
     WHERE NOT EXISTS (

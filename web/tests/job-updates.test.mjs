@@ -44,6 +44,10 @@ test("a running batch does not refresh when only some areas have finished", () =
 });
 
 for (const status of ["completed", "failed", "cancelled"]) {
+  test(`a queued job refreshes when it becomes ${status}`, () => {
+    const previous = job({ last_status: "pending", last_finished_at: null });
+    assert.equal(hasNewlyFinishedJobs(snapshot(previous), snapshot(job({ last_status: status }))), true);
+  });
   test(`a running job refreshes when it becomes ${status}`, () => {
     const previous = job({ last_status: "running", last_finished_at: null });
     const current = job({ last_status: status });
