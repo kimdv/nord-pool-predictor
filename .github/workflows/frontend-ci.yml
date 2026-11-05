@@ -32,3 +32,21 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        env:
+          API_BASE_URL: http://127.0.0.1:8000
+          PORT: "3106"
+          HOSTNAME: 127.0.0.1
+        run: |
+          cp -r public .next/standalone/
+          cp -r .next/static .next/standalone/.next/
+          node .next/standalone/server.js &
+          web_pid=$!
+          trap 'kill "$web_pid" 2>/dev/null || true' EXIT
+          curl --retry 30 --retry-delay 1 --retry-connrefused --fail --silent \
+            http://127.0.0.1:3106 > /dev/null
+          npm run test:browser
