@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import text
 
-from nordpool_predictor.worker import JOB_PROCESS_LOCK, worker_lock
+from nordpool_predictor.worker import JOB_PROCESS_LOCK, WORKER_LOCK, worker_lock
 
 
 @pytest.fixture
@@ -75,20 +75,29 @@ async def test_cancellation_keeps_locks_until_native_fitting_has_stopped(databas
     async def native_command(args):
         await asyncio.to_thread(fit)
 
-    with patch.object(cli, "_run_command", side_effect=native_command):
-        task = asyncio.create_task(cli.main(SimpleNamespace(command="train", area="DK1")))
-        try:
-            while not started.is_set():
-                await asyncio.sleep(0.01)
-            task.cancel()
-            await asyncio.sleep(0.05)
-            assert not task.done()
-            with pytest.raises(RuntimeError, match="already running"):
-                async with worker_lock():
-                    pytest.fail("Native fitting was still alive after locks were released")
-        finally:
-            release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    async with worker_lock():
-        pass
+    # Resolve/connect before the CLI shuts its executor down; localhost DNS uses that executor.
+    async with database.connect() as probe:
+
+        async def verify_locks_available(expected):
+            for key in (WORKER_LOCK, JOB_PROCESS_LOCK):
+                acquired = (
+                    await probe.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": key})
+                ).scalar_one()
+                if acquired:
+                    await probe.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+                assert acquired is expected
+
+        with patch.object(cli, "_run_command", side_effect=native_command):
+            task = asyncio.create_task(cli.main(SimpleNamespace(command="train", area="DK1")))
+            try:
+                while not started.is_set():
+                    await asyncio.sleep(0.01)
+                task.cancel()
+                await asyncio.sleep(0.05)
+                assert not task.done()
+                await verify_locks_available(False)
+            finally:
+                release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        await verify_locks_available(True)
