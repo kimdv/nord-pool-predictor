@@ -78,7 +78,8 @@ def _objective(
     }
 
     fold_maes: list[float] = []
-    for fold, (train_idx, val_idx) in enumerate(tscv.split(X), start=1):
+    folds = tscv.split(X) if hasattr(tscv, "split") else tscv
+    for fold, (train_idx, val_idx) in enumerate(folds, start=1):
         X_val = X.iloc[val_idx]
         issuances = X_val.index - pd.to_timedelta(
             X_val[HORIZON_STEP_FEATURE].to_numpy() * 15, unit="min"
@@ -246,15 +247,47 @@ async def train_models(
     )
 
     training_data = await prepare_training_data(area, production_backfill=production_backfill)
-    model_version, artifact_path, metrics, _models, now = await asyncio.to_thread(
-        _train_sync,
-        area,
-        settings.training_window_days,
-        settings.model_dir,
-        training_data,
-    )
+    experiment = None
+    if await _has_usable_active_model(area):
+        from nordpool_predictor.ml.short_term import start_or_promote
+
+        async with get_session() as session:
+            result = await session.execute(
+                text(
+                    "SELECT model_version FROM model_versions "
+                    "WHERE area = :area AND is_active = TRUE "
+                    "AND feature_set_version = 'v4-crossborder-history' "
+                    "ORDER BY trained_at DESC, model_version DESC LIMIT 1"
+                ),
+                {"area": area},
+            )
+            previous_version = result.scalar_one()
+        promoted = await start_or_promote(area, previous_version, training_data)
+        if promoted is None:
+            return previous_version
+        model_version, artifact_path, metrics, experiment = promoted
+        now = datetime.now(UTC)
+    else:
+        previous_version = None
+        model_version, artifact_path, metrics, _models, now = await asyncio.to_thread(
+            _train_sync,
+            area,
+            settings.training_window_days,
+            settings.model_dir,
+            training_data,
+        )
 
     async def register_model(connection) -> None:
+        if previous_version is not None:
+            active = await connection.execute(
+                text(
+                    "SELECT model_version FROM model_versions WHERE area = :area "
+                    "AND is_active = TRUE FOR UPDATE"
+                ),
+                {"area": area},
+            )
+            if active.scalar_one() != previous_version:
+                raise RuntimeError("Active model changed during experiment promotion")
         await connection.execute(
             text(
                 "UPDATE model_versions SET is_active = FALSE "
@@ -279,7 +312,7 @@ async def train_models(
                 "model_version": model_version,
                 "model_type": "lgbm_quantile",
                 "area": area,
-                "horizon_strategy": "direct",
+                "horizon_strategy": "paired_48h" if experiment is not None else "direct",
                 "feature_set_version": "v4-crossborder-history",
                 "trained_at": now,
                 "metrics_json": json.dumps(metrics),
@@ -298,13 +331,9 @@ async def train_models(
         logger.exception("Failed to register model %s for %s", model_version, area)
         raise
 
-    logger.info(
-        "Registered %s — MAE=%.4f  RMSE=%.4f  bias=%.4f",
-        model_version,
-        metrics["mae"],
-        metrics["rmse"],
-        metrics["bias"],
-    )
+    if experiment is not None:
+        (experiment.parent / "pending.json").unlink()
+    logger.info("Registered %s — metrics=%s", model_version, metrics)
     return model_version
 
 
@@ -331,7 +360,7 @@ async def _has_usable_active_model(area: str) -> bool:
             (
                 await session.execute(
                     text("""
-            SELECT model_version, artifact_path FROM model_versions
+            SELECT model_version, artifact_path, horizon_strategy FROM model_versions
             WHERE area = :area AND is_active = TRUE
               AND feature_set_version = 'v4-crossborder-history'
             ORDER BY trained_at DESC, model_version DESC
@@ -345,6 +374,8 @@ async def _has_usable_active_model(area: str) -> bool:
     try:
         await select_usable_model(area, candidates)
     except ModelUnavailableError:
+        if any(row.get("horizon_strategy") == "paired_48h" for row in candidates):
+            raise
         return False
     return True
 

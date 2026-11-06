@@ -64,7 +64,11 @@ async def cancel_job_request(job_name: str) -> dict[str, str]:
 async def get_job_request(job_id: UUID):
     async with get_session() as session:
         result = await session.execute(
-            text("SELECT * FROM job_requests WHERE job_id = :id"), {"id": job_id}
+            text(
+                "SELECT job_id, job_name, status, created_at, started_at, finished_at, error "
+                "FROM job_requests WHERE job_id = :id"
+            ),
+            {"id": job_id},
         )
         row = result.mappings().first()
     if row is None:

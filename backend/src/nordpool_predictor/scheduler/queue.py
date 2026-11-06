@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import text
@@ -22,17 +23,17 @@ JOB_NAMES = frozenset(
 )
 
 
-async def enqueue_job(job_name: str) -> UUID | None:
+async def enqueue_job(job_name: str, *, scheduled_at: datetime | None = None) -> UUID | None:
     if job_name not in JOB_NAMES | {"bootstrap"}:
         raise ValueError(f"Unknown job: {job_name}")
     async with get_session() as session:
         result = await session.execute(
             text("""
-            INSERT INTO job_requests (job_name) VALUES (:name)
+            INSERT INTO job_requests (job_name, scheduled_at) VALUES (:name, :scheduled_at)
             ON CONFLICT (job_name) WHERE status IN ('pending', 'running', 'cancelling') DO NOTHING
             RETURNING job_id
         """),
-            {"name": job_name},
+            {"name": job_name, "scheduled_at": scheduled_at},
         )
         job_id = result.scalar_one_or_none()
         await session.commit()

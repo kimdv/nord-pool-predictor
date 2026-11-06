@@ -10,6 +10,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 WORKER_LOCK = 73640101
 JOB_PROCESS_LOCK = 73640104
 LOCK_CHECK_INTERVAL = 1
+forecast_origin: ContextVar[datetime | None] = ContextVar("forecast_origin", default=None)
 _worker_lock_context: ContextVar[tuple[AsyncConnection, asyncio.Lock, int, int] | None] = (
     ContextVar("worker_lock_context", default=None)
 )
@@ -205,6 +207,16 @@ async def run_job_process(job_name: str, request_id: str, owner_pid: int) -> Non
                 pass
 
             await run_with_worker_lock(verify_owner)
+            origin = None
+            if job_name == "refresh_forecast":
+                async with get_session() as session:
+                    origin = (
+                        await session.execute(
+                            text("SELECT scheduled_at FROM job_requests WHERE job_id = :id"),
+                            {"id": request_id},
+                        )
+                    ).scalar_one()
+            origin_token = forecast_origin.set(origin)
             try:
                 await run_job(job_name)
             except Exception as exc:
@@ -215,6 +227,8 @@ async def run_job_process(job_name: str, request_id: str, owner_pid: int) -> Non
                     )
                     await session.commit()
                 raise
+            finally:
+                forecast_origin.reset(origin_token)
     finally:
         await dispose_engine()
 

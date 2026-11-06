@@ -5,6 +5,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -208,6 +209,16 @@ async def job_cleanup() -> None:
     await _run_job("cleanup", _do_cleanup)
 
 
+async def _enqueue_scheduled_forecast() -> None:
+    from nordpool_predictor.scheduler.queue import enqueue_job
+
+    now = datetime.now(ZoneInfo("Europe/Copenhagen"))
+    origin = now.replace(hour=(now.hour // 6) * 6, minute=5, second=0, microsecond=0)
+    if origin > now:
+        origin -= timedelta(hours=6)
+    await enqueue_job("refresh_forecast", scheduled_at=origin)
+
+
 def start_scheduler() -> AsyncIOScheduler:
     global _scheduler
     tz = "Europe/Copenhagen"
@@ -242,8 +253,7 @@ def start_scheduler() -> AsyncIOScheduler:
         id="ingest_crossborder",
     )
     _scheduler.add_job(
-        enqueue_job,
-        args=["refresh_forecast"],
+        _enqueue_scheduled_forecast,
         trigger=cron(hour="0,6,12,18", minute=5, timezone=tz),
         id="refresh_forecast",
     )

@@ -25,7 +25,7 @@ from nordpool_predictor.ml.features import (
     apply_horizon_features,
     load_prices,
 )
-from nordpool_predictor.ml.horizon import DEFAULT_HORIZON_STEPS
+from nordpool_predictor.ml.horizon import DEFAULT_HORIZON_STEPS, SHORT_HORIZON_STEPS
 
 logger = logging.getLogger(__name__)
 PRICE_HISTORY_DAYS = 8
@@ -204,18 +204,18 @@ async def run_forecast(
         )
 
         expected_features: list[str] = models["p50"].feature_name_  # type: ignore[union-attr]
+        if "short" in models:
+            expected_features = list(
+                dict.fromkeys([*expected_features, *models["short"]["p50"].feature_name_])
+            )
         missing = sorted(set(expected_features) - set(X.columns))
         notes: str | None = None
         if missing:
             notes = f"Degraded: missing {len(missing)} features: {missing[:10]}"
             logger.warning("Degraded forecast for %s: %s", area, notes)
 
-        X_aligned = X.reindex(columns=expected_features, fill_value=np.nan)
-
         # 5. Predict ---------------------------------------------------------
-        pred_p10, pred_p50, pred_p90 = await asyncio.to_thread(
-            _predict_quantiles, models, X_aligned
-        )
+        pred_p10, pred_p50, pred_p90 = await asyncio.to_thread(_predict_quantiles, models, X)
 
         # Independent quantile models can produce crossings (e.g. p10 > p50).
         # Sort per row so the band is always coherent.
@@ -260,6 +260,23 @@ async def run_forecast(
 
         logger.info("Persisted %d forecast rows for run %s", len(forecast_rows), run_id)
 
+        # An incomplete experiment must never make a completed production run fail.
+        try:
+            from nordpool_predictor.ml.short_term import capture_shadow
+            from nordpool_predictor.worker import forecast_origin
+
+            await capture_shadow(
+                area,
+                now,
+                X,
+                production_model_version=model_version,
+                scheduled_origin=forecast_origin.get(),
+            )
+        except Exception:
+            logger.exception(
+                "Short-term shadow capture failed for %s; production run retained", area
+            )
+
         logger.info(
             "Forecast %s complete: %d steps for %s (model=%s%s)",
             run_id,
@@ -287,4 +304,20 @@ async def run_forecast(
 
 
 def _predict_quantiles(models: dict, features: pd.DataFrame) -> tuple:
-    return tuple(models[q].predict(features) for q in ("p10", "p50", "p90"))
+    result = []
+    for quantile in ("p10", "p50", "p90"):
+        estimator = models[quantile]
+        values = np.asarray(
+            estimator.predict(
+                features.reindex(columns=estimator.feature_name_, fill_value=np.nan)
+            ),
+            dtype=float,
+        )
+        if "short" in models:
+            mask = features["horizon_step"].to_numpy() <= SHORT_HORIZON_STEPS
+            estimator = models["short"][quantile]
+            values[mask] = estimator.predict(
+                features.loc[mask].reindex(columns=estimator.feature_name_, fill_value=np.nan)
+            )
+        result.append(values)
+    return tuple(result)
