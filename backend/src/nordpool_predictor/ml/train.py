@@ -246,18 +246,17 @@ async def train_models(
         settings.training_window_days,
     )
 
-    training_data = await prepare_training_data(area, production_backfill=production_backfill)
     experiment = None
     from nordpool_predictor.ml.predict import select_active_model
+    from nordpool_predictor.ml.short_term import experiment_path, start_or_promote
 
     active = await select_active_model(area)
+    training_data = None
+    if active is None or experiment_path(area) is None:
+        training_data = await prepare_training_data(area, production_backfill=production_backfill)
     if active is not None:
-        from nordpool_predictor.ml.short_term import experiment_path, start_or_promote
-
         previous_version = active[0]
         del active
-        if experiment_path(area) is not None:
-            training_data = None
         promoted = await start_or_promote(area, previous_version, training_data)
         if promoted is None:
             return previous_version

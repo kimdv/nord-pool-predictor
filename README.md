@@ -366,10 +366,15 @@ the prospective test begins. Input matrices, parameters, source/commit identity,
 feature coverage and model-file hashes are saved. No experiment is written to
 production forecast tables, and the active model is retained while evidence is
 collected. First-install training still creates the existing long-only baseline.
+An existing trial is evaluated from its frozen evidence without preparing fresh
+training history; history preparation is required only when fitting a new trial
+or the first baseline.
 The holdout contains 28 full future Copenhagen dates, beginning at the next local
 midnight, with four fixed scheduler origins per date: 00:05, 06:05, 12:05, 18:05.
 All 112 origins must have one verified capture and complete outcomes. Canonical
 immutable slot files prevent extra captures from overweighting a good date.
+Every capture must contain each of the first 192 aligned quarter-hour targets
+exactly once, including targets whose prices were already known at issuance.
 The nullable `job_requests.scheduled_at` field carries scheduler provenance into
 worker children; public/manual triggers cannot assert it. Actual issuance and
 queue delay remain archived separately. Manual/debug captures are exploratory,

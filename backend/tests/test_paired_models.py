@@ -972,30 +972,168 @@ async def test_container_budget_includes_resident_worker_parent(database, settle
         ] == "awaiting_runtime_approval"
 
 
-async def test_pending_trial_drops_prepared_training_frame_before_evaluation(
-    database,
-    pending_experiment,
-):
-    import weakref
-
+async def test_pending_trial_skips_fresh_training_history(database, pending_experiment):
     from nordpool_predictor.ml import train
 
     path, _ = pending_experiment
     await _register_predecessor(database, path)
-    references = []
-
-    async def prepare(*args, **kwargs):
-        frame = pd.DataFrame({"unused_training_column": np.arange(1000)})
-        references.append(weakref.ref(frame))
-        return frame
-
-    async def evaluate(path):
-        assert references[0]() is None
-        return {"status": "insufficient_data"}
-
-    with (
-        patch.object(train, "prepare_training_data", side_effect=prepare),
-        patch.object(short_term, "evaluate_experiment", side_effect=evaluate) as report,
-    ):
+    with patch.object(
+        train,
+        "prepare_training_data",
+        AsyncMock(side_effect=RuntimeError("fresh training history is unavailable")),
+    ) as prepare:
         assert await train.train_models("DK1") == "older"
-    report.assert_awaited_once()
+    prepare.assert_not_awaited()
+
+
+def _damage_short_grid(snapshot, case, actual):
+    import copy
+
+    if case == "missing":
+        snapshot["rows"].pop(10)
+    elif case == "duplicate_known":
+        snapshot["rows"][10] = copy.deepcopy(snapshot["rows"][11])
+        snapshot["published_prices"][snapshot["rows"][10]["ts"]] = 1
+    else:
+        row = snapshot["rows"][0 if case == "misaligned_known" else 10]
+        row["ts"] = (pd.Timestamp(row["ts"]) + timedelta(minutes=1)).isoformat()
+        actual[row["ts"]] = 1
+        if case == "misaligned_known":
+            snapshot["published_prices"][row["ts"]] = 1
+
+
+@pytest.mark.parametrize(
+    "case", ["missing", "duplicate_known", "misaligned_known", "misaligned_unknown"]
+)
+def test_pure_metrics_reject_malformed_grid_before_known_price_masking(case):
+    data = snapshots()
+    for snapshot in data:
+        _damage_short_grid(snapshot, case, {})
+    assert len(data) == 112
+    assert all(len(snapshot["rows"]) >= 191 for snapshot in data)
+    assert short_term.evaluate_rows(data)["status"] == "invalid_data"
+
+
+def test_short_grid_accepts_normal_full_horizon_snapshot():
+    snapshot = snapshots()[0]
+    issued = pd.Timestamp(snapshot["issued_at"]).floor("15min")
+    snapshot["rows"].extend(
+        {
+            "horizon_step": step,
+            "ts": (issued + timedelta(minutes=15 * step)).isoformat(),
+        }
+        for step in range(193, 769)
+    )
+    assert len(snapshot["rows"]) == 768
+    assert short_term._short_rows(snapshot) == snapshot["rows"][:192]
+
+
+@pytest.mark.parametrize(
+    "case", ["missing", "duplicate_known", "misaligned_known", "misaligned_unknown"]
+)
+async def test_all_112_origins_with_partial_or_invalid_grids_cannot_promote(
+    database,
+    settled_experiment,
+    case,
+):
+    import hashlib
+
+    path, _ = settled_experiment
+    await _register_predecessor(database, path)
+    files = sorted((path / "snapshots").glob("*.json"))
+    assert len(files) == 112
+    for file in files:
+        snapshot = json.loads(file.read_text())
+        outcome_file = path / "outcomes" / file.name
+        outcome = json.loads(outcome_file.read_text())
+        _damage_short_grid(snapshot, case, outcome["actual"])
+        file.write_text(json.dumps(snapshot))
+        # Simulate an originally archived malformed capture, not a later hash mismatch.
+        outcome["snapshot_sha256"] = hashlib.sha256(file.read_bytes()).hexdigest()
+        outcome_file.write_text(json.dumps(outcome))
+    report = await short_term.evaluate_experiment(path)
+    assert report["status"] == "invalid_data"
+    assert len(report["unsettled_origins"]) == 112 and not report["missing_origins"]
+    assert len(report["invalid_snapshot_origins"]) == 112
+    with pytest.raises(ValueError, match="Complete the fixed prospective holdout"):
+        await short_term.approve_runtime(path, 1536, 1, True, True, worker_parent_peak_mib=25)
+    assert not (path / "runtime-approval.json").exists()
+
+
+async def test_pending_fully_evidenced_promotion_needs_no_fresh_training_history(
+    database,
+    settled_experiment,
+):
+    import hashlib
+
+    from nordpool_predictor.ml import train
+    from nordpool_predictor.worker import worker_lock
+
+    path, _ = settled_experiment
+    await _register_predecessor(database, path)
+    report = await short_term.evaluate_experiment(path)
+    assert report["status"] == "awaiting_runtime_approval"
+    short_term._write_once(
+        path / "runtime-approval.json",
+        {
+            "approved": True,
+            "boundary_reviewed": True,
+            "training_on_target_reviewed": True,
+            "production_model_version": "older",
+            "metadata_sha256": hashlib.sha256((path / "experiment.json").read_bytes()).hexdigest(),
+            "evidence_sha256": report["evidence_sha256"],
+            "child_peak_mib": 75,
+            "worker_parent_peak_mib": 25,
+            "peak_mib": 100,
+            "memory_budget_mib": 1536,
+            "ingestion_wait_seconds": 1,
+        },
+    )
+    with patch.object(
+        train,
+        "prepare_training_data",
+        AsyncMock(side_effect=RuntimeError("fresh training history is unavailable")),
+    ) as prepare:
+        async with worker_lock():
+            version = await train.train_models("DK1")
+    prepare.assert_not_awaited()
+    assert version.startswith("lgbm-DK1-paired-")
+    async with database.connect() as connection:
+        active = (
+            (
+                await connection.execute(
+                    text("SELECT model_version FROM model_versions WHERE is_active = TRUE")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert active == [version]
+
+
+@pytest.mark.parametrize("has_active_model", [False, True])
+async def test_first_install_and_new_trials_still_require_training_preparation(
+    database,
+    pending_experiment,
+    has_active_model,
+):
+    from nordpool_predictor.ml import train
+
+    path, _ = pending_experiment
+    if has_active_model:
+        await _register_predecessor(database, path)
+        (path.parent / "pending.json").unlink()
+    with (
+        patch.object(
+            train,
+            "prepare_training_data",
+            AsyncMock(side_effect=RuntimeError("fresh training history is unavailable")),
+        ) as prepare,
+        patch.object(train, "_train_sync") as fit,
+        patch.object(short_term, "train_experiment") as trial,
+    ):
+        with pytest.raises(RuntimeError, match="fresh training history is unavailable"):
+            await train.train_models("DK1")
+    prepare.assert_awaited_once()
+    fit.assert_not_called()
+    trial.assert_not_called()

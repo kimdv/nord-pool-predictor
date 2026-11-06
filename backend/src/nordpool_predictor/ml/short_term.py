@@ -479,33 +479,53 @@ def _metrics(rows: list[dict], model: str) -> dict:
     }
 
 
+def _short_rows(snapshot: dict) -> list[dict] | None:
+    """Require the whole issued grid before either known-price masking or settlement."""
+    rows = {}
+    try:
+        issued = pd.Timestamp(snapshot["issued_at"])
+        if issued.tzinfo is None:
+            return None
+        anchor = issued.floor("15min")
+        for row in snapshot["rows"]:
+            step = row["horizon_step"]
+            if type(step) is not int:
+                return None
+            if 1 <= step <= SHORT_HORIZON_STEPS:
+                if step in rows or pd.Timestamp(row["ts"]) != anchor + pd.Timedelta(
+                    minutes=step * 15
+                ):
+                    return None
+                rows[step] = row
+    except KeyError, TypeError, ValueError:
+        return None
+    if len(rows) != SHORT_HORIZON_STEPS:
+        return None
+    return [rows[step] for step in range(1, SHORT_HORIZON_STEPS + 1)]
+
+
 def evaluate_rows(snapshots: list[dict], policy: dict = POLICY) -> dict:
     """Score identical unknown targets, with hard minimum coverage and quality gates."""
-    paired, dates, daily, seen, origins = [], set(), {}, set(), set()
+    paired, dates, daily, origins = [], set(), {}, set()
     for snapshot in sorted(snapshots, key=lambda snapshot: snapshot["issued_at"]):
         issued = pd.Timestamp(snapshot["issued_at"])
         origin = _scheduled_origin(snapshot.get("scheduled_origin"), issued.to_pydatetime())
         if snapshot.get("availability") != "captured" or origin is None or origin in origins:
             continue
         origins.add(origin)
+        short_rows = _short_rows(snapshot)
+        if short_rows is None:
+            return {
+                "status": "invalid_data",
+                "reasons": ["Incomplete or invalid short-horizon grid"],
+            }
         date = issued.tz_convert("Europe/Copenhagen").date().isoformat()
         known = {pd.Timestamp(ts) for ts in snapshot["published_prices"]}
         rows = [
-            row
-            for row in snapshot["rows"]
-            if 1 <= row["horizon_step"] <= SHORT_HORIZON_STEPS
-            and pd.Timestamp(row["ts"]) not in known
-            and "actual" in row
+            row for row in short_rows if pd.Timestamp(row["ts"]) not in known and "actual" in row
         ]
         if not rows:
             continue
-        anchor = issued.floor("15min")
-        for row in rows:
-            ts = pd.Timestamp(row["ts"])
-            key = (issued, ts)
-            if key in seen or ts != anchor + pd.Timedelta(minutes=row["horizon_step"] * 15):
-                return {"status": "invalid_data", "reasons": ["Duplicate or off-grid target"]}
-            seen.add(key)
         numbers = np.asarray(
             [[row["actual"], *row["baseline"], *row["candidate"]] for row in rows]
         )
@@ -583,6 +603,7 @@ async def evaluate_experiment(path: Path) -> dict:
     evidence = hashlib.sha256()
     expected_origins = _expected_origins(metadata)
     captured_origins, settled_origins = set(), set()
+    invalid_origins = set()
     await asyncio.to_thread(_components, path, metadata)
     for file in sorted((path / "snapshots").glob("*.json")):
         snapshot = json.loads(file.read_text())
@@ -614,6 +635,10 @@ async def evaluate_experiment(path: Path) -> dict:
             datetime.fromisoformat(snapshot["captured_at"]),
         ):
             raise ValueError("Snapshot is not a verified near-live capture")
+        expected = _short_rows(snapshot)
+        if expected is None:
+            invalid_origins.add(origin)
+            continue
         if datetime.now(UTC) < issued + timedelta(hours=48):
             continue
         outcome = path / "outcomes" / file.name
@@ -631,7 +656,6 @@ async def evaluate_experiment(path: Path) -> dict:
                 actual = {
                     row["ts"].isoformat(): row["price_dkk_kwh"] for row in result.mappings().all()
                 }
-            expected = [row for row in snapshot["rows"] if row["horizon_step"] <= 192]
             if any(row["ts"] not in actual for row in expected):
                 continue
             _write_once(
@@ -645,7 +669,6 @@ async def evaluate_experiment(path: Path) -> dict:
         observed = json.loads(outcome.read_text())
         if observed["snapshot_sha256"] != hashlib.sha256(file.read_bytes()).hexdigest():
             raise ValueError("Issuance snapshot was modified after scoring")
-        expected = [row for row in snapshot["rows"] if row["horizon_step"] <= SHORT_HORIZON_STEPS]
         if any(row["ts"] not in observed["actual"] for row in expected):
             continue
         evidence.update(file.name.encode())
@@ -671,6 +694,9 @@ async def evaluate_experiment(path: Path) -> dict:
     )
     if result["missing_origins"] or result["unsettled_origins"]:
         result["status"] = "insufficient_data"
+    result["invalid_snapshot_origins"] = sorted(origin.isoformat() for origin in invalid_origins)
+    if invalid_origins:
+        result["status"] = "invalid_data"
     result["evidence_sha256"] = evidence.hexdigest()
     result["experiment"] = metadata["experiment"]
     result["components"] = metadata["components"]
