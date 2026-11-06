@@ -15,10 +15,14 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import text
 
 from nordpool_predictor.config import get_settings
-from nordpool_predictor.database import dispose_engine, get_session
+from nordpool_predictor.database import dispose_engine
 from nordpool_predictor.ml.features import build_feature_matrix
 from nordpool_predictor.ml.horizon import DEFAULT_HORIZON_STEPS
-from nordpool_predictor.ml.predict import _build_forecast_features
+from nordpool_predictor.ml.predict import (
+    ModelUnavailableError,
+    _build_forecast_features,
+    select_active_model,
+)
 from nordpool_predictor.ml.short_term import (
     approve_runtime,
     capture_shadow,
@@ -38,16 +42,11 @@ async def _run_command(args):
     if args.command == "train":
         if path is not None:
             raise ValueError("Pending experiment exists; keep or archive it explicitly first")
-        async with get_session() as session:
-            result = await session.execute(
-                text(
-                    "SELECT model_version FROM model_versions WHERE area = :area "
-                    "AND is_active = TRUE AND feature_set_version = 'v4-crossborder-history' "
-                    "ORDER BY trained_at DESC, model_version DESC LIMIT 1"
-                ),
-                {"area": args.area},
-            )
-            active = result.scalar_one()
+        active = await select_active_model(args.area)
+        if active is None:
+            raise ModelUnavailableError(f"No usable active model for {args.area}")
+        active_version = active[0]
+        del active
         cutoff = datetime.now(UTC)
         frame = await asyncio.to_thread(
             build_feature_matrix,
@@ -55,7 +54,7 @@ async def _run_command(args):
             cutoff - timedelta(days=settings.training_window_days),
             cutoff,
         )
-        path = await asyncio.to_thread(train_experiment, args.area, active, frame)
+        path = await asyncio.to_thread(train_experiment, args.area, active_version, frame)
         print(path)
     elif path is None:
         raise ValueError("No pending experiment for this area")

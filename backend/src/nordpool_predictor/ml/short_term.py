@@ -29,7 +29,12 @@ from sqlalchemy import text
 
 from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
-from nordpool_predictor.ml.artifacts import load_models, write_bundle, write_manifest
+from nordpool_predictor.ml.artifacts import (
+    clear_model_cache,
+    load_models,
+    write_bundle,
+    write_manifest,
+)
 from nordpool_predictor.ml.features import HORIZON_STEP_FEATURE, TARGET, build_feature_matrix
 from nordpool_predictor.ml.horizon import DEFAULT_HORIZON_STEPS, SHORT_HORIZON_STEPS
 
@@ -640,6 +645,9 @@ async def evaluate_experiment(path: Path) -> dict:
         observed = json.loads(outcome.read_text())
         if observed["snapshot_sha256"] != hashlib.sha256(file.read_bytes()).hexdigest():
             raise ValueError("Issuance snapshot was modified after scoring")
+        expected = [row for row in snapshot["rows"] if row["horizon_step"] <= SHORT_HORIZON_STEPS]
+        if any(row["ts"] not in observed["actual"] for row in expected):
+            continue
         evidence.update(file.name.encode())
         evidence.update(hashlib.sha256(file.read_bytes()).digest())
         evidence.update(hashlib.sha256(outcome.read_bytes()).digest())
@@ -706,7 +714,11 @@ async def approve_runtime(
     training_on_target_reviewed: bool,
 ) -> dict:
     """Run on the target NAS after checking queue delay and boundary diagnostics."""
-    from nordpool_predictor.ml.predict import _build_forecast_features, _predict_quantiles
+    from nordpool_predictor.ml.predict import (
+        _build_forecast_features,
+        _predict_quantiles,
+        select_active_model,
+    )
 
     if (
         not np.isfinite([memory_budget_mib, ingestion_wait_seconds]).all()
@@ -723,21 +735,10 @@ async def approve_runtime(
     if report["status"] not in {"accepted", "awaiting_runtime_approval"}:
         raise ValueError("Complete the fixed prospective holdout before runtime/boundary approval")
     started = time.monotonic()
-    async with get_session() as session:
-        result = await session.execute(
-            text(
-                "SELECT model_version, artifact_path FROM model_versions WHERE area = :area "
-                "AND is_active = TRUE AND feature_set_version = 'v4-crossborder-history' "
-                "ORDER BY trained_at DESC, model_version DESC LIMIT 1"
-            ),
-            {"area": metadata["area"]},
-        )
-        active = result.mappings().one()
-    if active["model_version"] != metadata["base_model_version"]:
+    active = await select_active_model(metadata["area"])
+    if active is None or active[0] != metadata["base_model_version"]:
         raise ValueError("Runtime measurement requires the experiment's unchanged active version")
-    production = await asyncio.to_thread(
-        load_models, active["model_version"], active["artifact_path"], metadata["area"]
-    )
+    active_version, production = active
     long, short = await asyncio.to_thread(_components, path, metadata)
     features, _ = await asyncio.to_thread(
         _build_forecast_features, metadata["area"], datetime.now(UTC), DEFAULT_HORIZON_STEPS
@@ -748,7 +749,7 @@ async def approve_runtime(
     approval = {
         "host": socket.gethostname(),
         "training_host": metadata["training_runtime"]["host"],
-        "production_model_version": active["model_version"],
+        "production_model_version": active_version,
         "training_on_target_reviewed": True,
         "metadata_sha256": hashlib.sha256((path / "experiment.json").read_bytes()).hexdigest(),
         "evidence_sha256": report["evidence_sha256"],
@@ -802,6 +803,8 @@ async def start_or_promote(area: str, active_version: str, frame: pd.DataFrame) 
         {"experiment": metadata, "evaluation": report},
     )
     # Loading the finished package validates all six files before the DB transaction.
+    del long, short
+    await asyncio.to_thread(clear_model_cache)
     await asyncio.to_thread(load_models, version, artifact, area)
     return (
         version,

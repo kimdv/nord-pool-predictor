@@ -411,6 +411,7 @@ async def test_evidence_and_runtime_approval_are_required_for_promotion(settled_
     assert returned_path == path
     assert metrics["short_term_evaluation"]["status"] == "accepted"
     assert "short" in artifacts.load_models(version, manifest, "DK1")
+    assert artifacts._load_quantile.cache_info().currsize == 6
     # No database registration has been attempted by building a validated package.
     assert short_term.experiment_path("DK1") == path
 
@@ -527,7 +528,7 @@ def test_experiment_freezes_both_resampled_training_sets_before_testing(model_ro
     assert long_models["p50"].feature_name_ == short_models["p50"].feature_name_
 
 
-async def _register_predecessor(database, path):
+async def _register_predecessor(database, path, *, broken_newest=False):
     original = json.loads((path / "test-long.json").read_text())
     original["model_version"] = "older"
     registration = path / "older.json"
@@ -541,14 +542,25 @@ async def _register_predecessor(database, path):
         """),
             {"path": str(registration)},
         )
+        if broken_newest:
+            await conn.execute(
+                text("""
+                INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
+                    feature_set_version, trained_at, artifact_path, is_active)
+                VALUES ('newer-broken', 'test', 'DK1', 'direct', 'v4-crossborder-history',
+                        NOW() + INTERVAL '1 minute', 'missing.json', TRUE)
+            """)
+            )
 
 
+@pytest.mark.parametrize("broken_newest", [False, True])
 @pytest.mark.parametrize("fail_registration", [False, True])
 async def test_promotion_transaction_and_pinned_forecast_preserve_one_version(
     database,
     pending_experiment,
     model_root,
     fail_registration,
+    broken_newest,
 ):
     from sqlalchemy.exc import IntegrityError
 
@@ -556,7 +568,7 @@ async def test_promotion_transaction_and_pinned_forecast_preserve_one_version(
     from nordpool_predictor.worker import worker_lock
 
     path, _ = pending_experiment
-    await _register_predecessor(database, path)
+    await _register_predecessor(database, path, broken_newest=broken_newest)
     version = "older" if fail_registration else "paired"
     artifact = artifacts.write_bundle(
         model_root,
@@ -587,7 +599,12 @@ async def test_promotion_transaction_and_pinned_forecast_preserve_one_version(
             .scalars()
             .all()
         )
-        assert active == ["older" if fail_registration else "paired"]
+        expected = (
+            {"older", "newer-broken"}
+            if fail_registration and broken_newest
+            else {"older" if fail_registration else "paired"}
+        )
+        assert set(active) == expected
     if fail_registration:
         assert (path.parent / "pending.json").exists()
         return
@@ -738,3 +755,144 @@ def test_full_local_holdout_has_112_fixed_slots_even_across_dst():
         12,
         18,
     }
+
+
+async def test_loaded_partial_outcome_keeps_the_entire_origin_unsettled(settled_experiment):
+    path, _ = settled_experiment
+    outcome = sorted((path / "outcomes").glob("*.json"))[0]
+    observed = json.loads(outcome.read_text())
+    missing = list(observed["actual"])[10]
+    del observed["actual"][missing]
+    outcome.write_text(json.dumps(observed))
+    partial = outcome.read_bytes()
+    report = await short_term.evaluate_experiment(path)
+    assert report["status"] == "insufficient_data"
+    assert report["dates"] == 28
+    assert len(report["unsettled_origins"]) == 1 and not report["missing_origins"]
+    assert report["metrics"]["0_48"]["baseline"]["samples"] == 111 * 191
+    with pytest.raises(ValueError, match="Complete the fixed prospective holdout"):
+        await short_term.approve_runtime(path, 1536, 1, True, True)
+    assert not (path / "runtime-approval.json").exists()
+    assert outcome.read_bytes() == partial
+
+
+async def test_trial_training_carries_the_actual_artifact_fallback_version(
+    database,
+    pending_experiment,
+):
+    from nordpool_predictor.ml import train
+
+    path, _ = pending_experiment
+    await _register_predecessor(database, path, broken_newest=True)
+    with (
+        patch.object(train, "prepare_training_data", AsyncMock(return_value=pd.DataFrame())),
+        patch.object(short_term, "start_or_promote", AsyncMock(return_value=None)) as trial,
+    ):
+        assert await train.train_models("DK1") == "older"
+    assert trial.await_args.args[1] == "older"
+
+
+async def test_cli_trial_training_uses_the_actual_artifact_fallback(
+    database,
+    pending_experiment,
+):
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    path, _ = pending_experiment
+    await _register_predecessor(database, path, broken_newest=True)
+    spec = spec_from_file_location(
+        "trial_cli", Path(__file__).parents[1] / "scripts/short_term_experiment.py"
+    )
+    cli = module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    with (
+        patch.object(cli, "experiment_path", return_value=None),
+        patch.object(cli, "build_feature_matrix", return_value=pd.DataFrame()),
+        patch.object(cli, "train_experiment", return_value=path) as train,
+    ):
+        await cli._run_command(SimpleNamespace(command="train", area="DK1"))
+    assert train.call_args.args[1] == "older"
+
+
+async def test_runtime_approval_measures_the_same_artifact_fallback_version(
+    database,
+    settled_experiment,
+):
+    path, _ = settled_experiment
+    await _register_predecessor(database, path, broken_newest=True)
+    targets = pd.date_range("2026-01-01", periods=768, freq="15min", tz=UTC)
+    frame = pd.DataFrame({"horizon_step": np.arange(1, 769)}, index=targets)
+    with (
+        patch.object(predict, "_build_forecast_features", return_value=(frame, targets)),
+        patch.object(short_term, "_peak_mib", return_value=100),
+    ):
+        approved = await short_term.approve_runtime(path, 1536, 1, True, True)
+    assert approved["production_model_version"] == "older"
+    assert artifacts._load_quantile.cache_info().currsize == 9
+    assert (await short_term.evaluate_experiment(path))["status"] == "accepted"
+
+
+def test_changing_area_releases_cached_estimators_before_loading_the_next(model_root):
+    import weakref
+
+    import joblib
+
+    first = artifacts.write_bundle(
+        model_root, "one", "DK1", component(1, ["a"]), component(2, ["a"]), {}
+    )
+    second = artifacts.write_bundle(
+        model_root, "two", "DK2", component(1, ["a"]), component(2, ["a"]), {}
+    )
+    models = artifacts.load_models("one", first, "DK1")
+    references = [weakref.ref(models[q]) for q in artifacts.QUANTILES]
+    references.extend(weakref.ref(models["short"][q]) for q in artifacts.QUANTILES)
+    del models
+    assert all(reference() is not None for reference in references)
+    load = joblib.load
+
+    def verify_released(path):
+        assert all(reference() is None for reference in references)
+        return load(path)
+
+    with patch.object(artifacts.joblib, "load", side_effect=verify_released):
+        artifacts.load_models("two", second, "DK2")
+    assert artifacts._load_quantile.cache_info().currsize == 6
+
+
+async def test_bootstrap_releases_each_areas_temporary_models(database, model_root):
+    import weakref
+
+    import joblib
+
+    for area in ("DK1", "DK2"):
+        manifest = artifacts.write_bundle(
+            model_root, area, area, component(1, ["a"]), component(2, ["a"]), {}
+        )
+        async with database.begin() as conn:
+            await conn.execute(
+                text("""
+                INSERT INTO model_versions (model_version, model_type, area, horizon_strategy,
+                    feature_set_version, trained_at, artifact_path, is_active)
+                VALUES (:area, 'test', :area, 'paired_48h', 'v4-crossborder-history',
+                        NOW(), :path, TRUE)
+            """),
+                {"area": area, "path": manifest},
+            )
+    load = joblib.load
+    area_seen, references = None, []
+
+    def track_area(path):
+        nonlocal area_seen, references
+        area = path.split("/")[-1].split("-")[0]
+        if area_seen is not None and area != area_seen:
+            assert all(reference() is None for reference in references)
+            references = []
+        model = load(path)
+        references.append(weakref.ref(model))
+        area_seen = area
+        return model
+
+    with patch.object(artifacts.joblib, "load", side_effect=track_area):
+        assert await bootstrap.ready_models() == {"DK1": "DK1", "DK2": "DK2"}
+    assert artifacts._load_quantile.cache_info().currsize == 6

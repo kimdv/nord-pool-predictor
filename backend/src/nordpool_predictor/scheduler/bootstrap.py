@@ -55,6 +55,7 @@ async def ready_models() -> dict[str, str]:
                 raise
         else:
             ready[area] = version
+            del _models
     return ready
 
 

@@ -430,6 +430,10 @@ and the explicit confirmations `--boundary-reviewed --training-on-target-reviewe
 This loads and predicts both the active production model and the frozen pair in
 one process, records peak RAM and inference time, and checks the declared memory
 budget. The 1536 MiB reference Compose limit is not proof of the actual NAS limit.
+Model cache lifetime is one area in both production and approval. Switching
+areas releases the previous area's cached estimators; bootstrap retains only
+version IDs. Promotion also releases frozen estimators before loading their copied
+package, so it does not keep two six-model copies alive during validation.
 Container hostname changes do not invalidate a frozen experiment. Runtime approval
 is immutable and bound to the experiment metadata and component identities.
 It also binds the exact settled holdout evidence, so boundary approval cannot be

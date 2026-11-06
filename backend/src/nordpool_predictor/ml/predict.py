@@ -69,6 +69,28 @@ async def select_usable_model(
     ) from last_error
 
 
+async def select_active_model(area: str, *, connection=None) -> tuple[str, dict] | None:
+    """Select artifacts, not just the newest row; a supplied transaction locks candidates."""
+    query = (
+        "SELECT model_version, artifact_path, horizon_strategy FROM model_versions "
+        "WHERE area = :area AND is_active = TRUE "
+        "AND feature_set_version = 'v4-crossborder-history' "
+        "ORDER BY trained_at DESC, model_version DESC"
+    )
+    if connection is None:
+        async with get_session() as session:
+            result = await session.execute(text(query), {"area": area})
+    else:
+        result = await connection.execute(text(query + " FOR UPDATE"), {"area": area})
+    candidates = result.mappings().all()
+    try:
+        return await select_usable_model(area, candidates)
+    except ModelUnavailableError:
+        if any(row.get("horizon_strategy") == "paired_48h" for row in candidates):
+            raise
+        return None
+
+
 def _build_forecast_features(
     area: str,
     now: datetime,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -13,6 +14,19 @@ from nordpool_predictor.config import get_settings
 from nordpool_predictor.ml.horizon import SHORT_HORIZON_STEPS
 
 QUANTILES = ("p10", "p50", "p90")
+_model_cache_area: str | None = None
+
+
+def clear_model_cache() -> None:
+    _load_quantile.cache_clear()
+    gc.collect()
+
+
+def _use_area_cache(area: str) -> None:
+    global _model_cache_area
+    if _model_cache_area != area:
+        clear_model_cache()
+        _model_cache_area = area
 
 
 def feature_importance(model: Any) -> list[dict[str, str | float]]:
@@ -87,6 +101,7 @@ def _load_quantile(version: str, path: str) -> Any:
 
 
 def load_models(version: str, artifact_path: str, area: str) -> dict[str, Any]:
+    _use_area_cache(area)
     paths, manifest = _resolve(version, artifact_path, area)
     models = {q: _load_quantile(version, str(paths[q])) for q in QUANTILES}
     if manifest is not None and manifest["format_version"] == 2:
@@ -137,6 +152,7 @@ def write_bundle(
 
 
 def load_feature_importance(version: str, artifact_path: str, area: str) -> list[dict]:
+    _use_area_cache(area)
     paths, manifest = _resolve(version, artifact_path, area)
     if manifest is not None:
         return manifest["feature_importance"]

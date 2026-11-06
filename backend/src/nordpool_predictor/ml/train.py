@@ -248,20 +248,14 @@ async def train_models(
 
     training_data = await prepare_training_data(area, production_backfill=production_backfill)
     experiment = None
-    if await _has_usable_active_model(area):
+    from nordpool_predictor.ml.predict import select_active_model
+
+    active = await select_active_model(area)
+    if active is not None:
         from nordpool_predictor.ml.short_term import start_or_promote
 
-        async with get_session() as session:
-            result = await session.execute(
-                text(
-                    "SELECT model_version FROM model_versions "
-                    "WHERE area = :area AND is_active = TRUE "
-                    "AND feature_set_version = 'v4-crossborder-history' "
-                    "ORDER BY trained_at DESC, model_version DESC LIMIT 1"
-                ),
-                {"area": area},
-            )
-            previous_version = result.scalar_one()
+        previous_version = active[0]
+        del active
         promoted = await start_or_promote(area, previous_version, training_data)
         if promoted is None:
             return previous_version
@@ -279,14 +273,8 @@ async def train_models(
 
     async def register_model(connection) -> None:
         if previous_version is not None:
-            active = await connection.execute(
-                text(
-                    "SELECT model_version FROM model_versions WHERE area = :area "
-                    "AND is_active = TRUE FOR UPDATE"
-                ),
-                {"area": area},
-            )
-            if active.scalar_one() != previous_version:
+            active = await select_active_model(area, connection=connection)
+            if active is None or active[0] != previous_version:
                 raise RuntimeError("Active model changed during experiment promotion")
         await connection.execute(
             text(
@@ -353,31 +341,9 @@ def production_training_metrics(frame: pd.DataFrame) -> dict:
 
 
 async def _has_usable_active_model(area: str) -> bool:
-    from nordpool_predictor.ml.predict import ModelUnavailableError, select_usable_model
+    from nordpool_predictor.ml.predict import select_active_model
 
-    async with get_session() as session:
-        candidates = (
-            (
-                await session.execute(
-                    text("""
-            SELECT model_version, artifact_path, horizon_strategy FROM model_versions
-            WHERE area = :area AND is_active = TRUE
-              AND feature_set_version = 'v4-crossborder-history'
-            ORDER BY trained_at DESC, model_version DESC
-        """),
-                    {"area": area},
-                )
-            )
-            .mappings()
-            .all()
-        )
-    try:
-        await select_usable_model(area, candidates)
-    except ModelUnavailableError:
-        if any(row.get("horizon_strategy") == "paired_48h" for row in candidates):
-            raise
-        return False
-    return True
+    return await select_active_model(area) is not None
 
 
 async def prepare_training_data(
