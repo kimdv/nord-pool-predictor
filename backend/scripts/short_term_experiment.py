@@ -78,6 +78,7 @@ async def _run_command(args):
                     args.ingestion_wait_seconds,
                     args.boundary_reviewed,
                     args.training_on_target_reviewed,
+                    worker_parent_peak_mib=args.worker_parent_peak_mib,
                 ),
                 indent=2,
                 allow_nan=False,
@@ -127,11 +128,17 @@ if __name__ == "__main__":
     parser.add_argument("area")
     parser.add_argument("--memory-budget-mib", type=float)
     parser.add_argument("--ingestion-wait-seconds", type=float)
+    parser.add_argument("--worker-parent-peak-mib", type=float)
     parser.add_argument("--boundary-reviewed", action="store_true")
     parser.add_argument("--training-on-target-reviewed", action="store_true")
     args = parser.parse_args()
     if args.command == "approve-runtime" and (
-        args.memory_budget_mib is None or args.ingestion_wait_seconds is None
+        args.memory_budget_mib is None
+        or args.ingestion_wait_seconds is None
+        or args.worker_parent_peak_mib is None
     ):
-        parser.error("approve-runtime requires a memory budget and measured ingestion wait")
+        parser.error(
+            "approve-runtime requires a container memory budget, measured ingestion wait "
+            "and measured worker-parent peak RSS"
+        )
     asyncio.run(main(args))

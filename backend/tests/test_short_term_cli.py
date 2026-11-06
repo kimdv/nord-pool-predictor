@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import runpy
 import threading
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -21,6 +22,25 @@ def cli():
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_cli_approval_requires_measured_resident_parent_reserve(cli):
+    argv = [
+        cli.__file__,
+        "approve-runtime",
+        "DK1",
+        "--memory-budget-mib",
+        "1536",
+        "--ingestion-wait-seconds",
+        "1",
+        "--boundary-reviewed",
+        "--training-on-target-reviewed",
+    ]
+    with patch("sys.argv", argv), patch("asyncio.run") as run:
+        with pytest.raises(SystemExit) as error:
+            runpy.run_path(cli.__file__, run_name="__main__")
+    assert error.value.code == 2
+    run.assert_not_called()
 
 
 @pytest.mark.parametrize("command", ["train", "capture", "reproduce", "report", "approve-runtime"])

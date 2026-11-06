@@ -398,6 +398,8 @@ async def test_evidence_and_runtime_approval_are_required_for_promotion(settled_
             "metadata_sha256": hashlib.sha256((path / "experiment.json").read_bytes()).hexdigest(),
             "boundary_reviewed": True,
             "host": socket.gethostname(),
+            "child_peak_mib": 75,
+            "worker_parent_peak_mib": 25,
             "peak_mib": 100,
             "memory_budget_mib": 1536,
             "ingestion_wait_seconds": 12,
@@ -692,6 +694,7 @@ def test_duplicate_good_origins_cannot_overweight_the_fixed_holdout():
 
 
 async def test_all_eligible_outcomes_must_settle_before_immutable_runtime_approval(
+    database,
     settled_experiment,
     mock_db_session,
 ):
@@ -699,6 +702,7 @@ async def test_all_eligible_outcomes_must_settle_before_immutable_runtime_approv
     import socket
 
     path, _ = settled_experiment
+    await _register_predecessor(database, path)
     snapshot = sorted((path / "snapshots").glob("*.json"))[0]
     outcome = path / "outcomes" / snapshot.name
     saved = outcome.read_bytes()
@@ -710,7 +714,7 @@ async def test_all_eligible_outcomes_must_settle_before_immutable_runtime_approv
         assert not report["missing_origins"] and len(report["unsettled_origins"]) == 1
         assert report["dates"] == 28  # 111 mature origins already meet the numeric minimums.
         with pytest.raises(ValueError, match="Complete the fixed prospective holdout"):
-            await short_term.approve_runtime(path, 1536, 1, True, True)
+            await short_term.approve_runtime(path, 1536, 1, True, True, worker_parent_peak_mib=25)
     assert not (path / "runtime-approval.json").exists()
     outcome.write_bytes(saved)
     report = await short_term.evaluate_experiment(path)
@@ -725,6 +729,8 @@ async def test_all_eligible_outcomes_must_settle_before_immutable_runtime_approv
             "host": socket.gethostname(),
             "metadata_sha256": hashlib.sha256((path / "experiment.json").read_bytes()).hexdigest(),
             "evidence_sha256": report["evidence_sha256"],
+            "child_peak_mib": 75,
+            "worker_parent_peak_mib": 25,
             "peak_mib": 100,
             "memory_budget_mib": 1536,
             "ingestion_wait_seconds": 1,
@@ -757,8 +763,11 @@ def test_full_local_holdout_has_112_fixed_slots_even_across_dst():
     }
 
 
-async def test_loaded_partial_outcome_keeps_the_entire_origin_unsettled(settled_experiment):
+async def test_loaded_partial_outcome_keeps_the_entire_origin_unsettled(
+    database, settled_experiment
+):
     path, _ = settled_experiment
+    await _register_predecessor(database, path)
     outcome = sorted((path / "outcomes").glob("*.json"))[0]
     observed = json.loads(outcome.read_text())
     missing = list(observed["actual"])[10]
@@ -771,7 +780,7 @@ async def test_loaded_partial_outcome_keeps_the_entire_origin_unsettled(settled_
     assert len(report["unsettled_origins"]) == 1 and not report["missing_origins"]
     assert report["metrics"]["0_48"]["baseline"]["samples"] == 111 * 191
     with pytest.raises(ValueError, match="Complete the fixed prospective holdout"):
-        await short_term.approve_runtime(path, 1536, 1, True, True)
+        await short_term.approve_runtime(path, 1536, 1, True, True, worker_parent_peak_mib=25)
     assert not (path / "runtime-approval.json").exists()
     assert outcome.read_bytes() == partial
 
@@ -823,14 +832,30 @@ async def test_runtime_approval_measures_the_same_artifact_fallback_version(
     await _register_predecessor(database, path, broken_newest=True)
     targets = pd.date_range("2026-01-01", periods=768, freq="15min", tz=UTC)
     frame = pd.DataFrame({"horizon_step": np.arange(1, 769)}, index=targets)
+    evaluate = short_term.evaluate_experiment
+
+    async def verify_active_is_resident_during_evaluation(path):
+        assert artifacts._load_quantile.cache_info().currsize == 3
+        return await evaluate(path)
+
     with (
+        patch.object(
+            short_term,
+            "evaluate_experiment",
+            side_effect=verify_active_is_resident_during_evaluation,
+        ),
         patch.object(predict, "_build_forecast_features", return_value=(frame, targets)),
         patch.object(short_term, "_peak_mib", return_value=100),
     ):
-        approved = await short_term.approve_runtime(path, 1536, 1, True, True)
+        approved = await short_term.approve_runtime(
+            path, 1536, 1, True, True, worker_parent_peak_mib=25
+        )
     assert approved["production_model_version"] == "older"
+    assert approved["child_peak_mib"] == 100
+    assert approved["worker_parent_peak_mib"] == 25
+    assert approved["peak_mib"] == 125
     assert artifacts._load_quantile.cache_info().currsize == 9
-    assert (await short_term.evaluate_experiment(path))["status"] == "accepted"
+    assert (await evaluate(path))["status"] == "accepted"
 
 
 def test_changing_area_releases_cached_estimators_before_loading_the_next(model_root):
@@ -896,3 +921,81 @@ async def test_bootstrap_releases_each_areas_temporary_models(database, model_ro
     with patch.object(artifacts.joblib, "load", side_effect=track_area):
         assert await bootstrap.ready_models() == {"DK1": "DK1", "DK2": "DK2"}
     assert artifacts._load_quantile.cache_info().currsize == 6
+
+
+@pytest.mark.parametrize("parent_peak", [None, 0, -1, float("nan"), float("inf")])
+async def test_runtime_approval_requires_measured_worker_parent_proof(
+    settled_experiment, parent_peak
+):
+    path, _ = settled_experiment
+    with pytest.raises(ValueError, match="Measured worker-parent peak RSS"):
+        await short_term.approve_runtime(
+            path, 1536, 1, True, True, worker_parent_peak_mib=parent_peak
+        )
+    assert not (path / "runtime-approval.json").exists()
+
+
+async def test_container_budget_includes_resident_worker_parent(database, settled_experiment):
+    path, _ = settled_experiment
+    await _register_predecessor(database, path)
+    targets = pd.date_range("2026-01-01", periods=768, freq="15min", tz=UTC)
+    frame = pd.DataFrame({"horizon_step": np.arange(1, 769)}, index=targets)
+    with (
+        patch.object(predict, "_build_forecast_features", return_value=(frame, targets)),
+        patch.object(short_term, "_peak_mib", return_value=100),
+    ):
+        # Child alone fits150 MiB, but the genuine parent reserve makes160 MiB.
+        with pytest.raises(ValueError, match="exceeds target NAS budget"):
+            await short_term.approve_runtime(path, 150, 1, True, True, worker_parent_peak_mib=60)
+        assert not (path / "runtime-approval.json").exists()
+        approved = await short_term.approve_runtime(
+            path, 160, 1, True, True, worker_parent_peak_mib=60
+        )
+    assert approved["child_peak_mib"] == 100 and approved["worker_parent_peak_mib"] == 60
+    assert approved["peak_mib"] == 160
+    assert (await short_term.evaluate_experiment(path))["status"] == "accepted"
+    # Child-only legacy records and totals smaller than their components are not proof.
+    approval_file = path / "runtime-approval.json"
+    for altered in (
+        {
+            key: value
+            for key, value in approved.items()
+            if key not in {"child_peak_mib", "worker_parent_peak_mib"}
+        },
+        {**approved, "peak_mib": 100},
+        {**approved, "memory_budget_mib": 150},
+        {**approved, "worker_parent_peak_mib": None},
+    ):
+        approval_file.write_text(json.dumps(altered))
+        assert (await short_term.evaluate_experiment(path))[
+            "status"
+        ] == "awaiting_runtime_approval"
+
+
+async def test_pending_trial_drops_prepared_training_frame_before_evaluation(
+    database,
+    pending_experiment,
+):
+    import weakref
+
+    from nordpool_predictor.ml import train
+
+    path, _ = pending_experiment
+    await _register_predecessor(database, path)
+    references = []
+
+    async def prepare(*args, **kwargs):
+        frame = pd.DataFrame({"unused_training_column": np.arange(1000)})
+        references.append(weakref.ref(frame))
+        return frame
+
+    async def evaluate(path):
+        assert references[0]() is None
+        return {"status": "insufficient_data"}
+
+    with (
+        patch.object(train, "prepare_training_data", side_effect=prepare),
+        patch.object(short_term, "evaluate_experiment", side_effect=evaluate) as report,
+    ):
+        assert await train.train_models("DK1") == "older"
+    report.assert_awaited_once()

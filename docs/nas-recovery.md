@@ -15,6 +15,14 @@ frozen capture slot. Never run competing native training via `docker exec` in a
 live worker. A missing short component is a broken
 package, not permission to train or activate a replacement automatically.
 
+Runtime approval's memory budget is container-wide: measure the genuine resident
+worker parent's peak RSS while normal child jobs are running, before stopping
+the worker for the exclusive CLI. The required `--worker-parent-peak-mib` reserve
+is added to measured child/training peak memory. A CLI/one-off parent or a
+PostgreSQL backend PID is not that worker parent; absent parent proof and old
+child-only approval records cannot authorize promotion. See README for the
+`/proc` measurement and MiB conversion.
+
 For explicit rollback, stop model jobs, validate the preserved long-only version's
 artifacts with the matching backend, and record the currently active version ID.
 In one database transaction deactivate that area's current registration and

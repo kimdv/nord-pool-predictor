@@ -252,10 +252,12 @@ async def train_models(
 
     active = await select_active_model(area)
     if active is not None:
-        from nordpool_predictor.ml.short_term import start_or_promote
+        from nordpool_predictor.ml.short_term import experiment_path, start_or_promote
 
         previous_version = active[0]
         del active
+        if experiment_path(area) is not None:
+            training_data = None
         promoted = await start_or_promote(area, previous_version, training_data)
         if promoted is None:
             return previous_version

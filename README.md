@@ -426,10 +426,28 @@ Verify the recorded training was on the target NAS. Stop the worker and use
 the same exclusive one-off workflow on that NAS to run
 `python scripts/short_term_experiment.py approve-runtime DK1` with
 `--memory-budget-mib <actual-budget> --ingestion-wait-seconds <measured-delay>`
+and `--worker-parent-peak-mib <measured-parent-reserve>`
 and the explicit confirmations `--boundary-reviewed --training-on-target-reviewed`.
 This loads and predicts both the active production model and the frozen pair in
 one process, records peak RAM and inference time, and checks the declared memory
 budget. The 1536 MiB reference Compose limit is not proof of the actual NAS limit.
+Approval loads the selected production estimators before scanning the archived
+holdout, matching the worker's warm-cache overlap. Pending-trial evaluation drops
+its unused prepared training frame in both caller and callee before that scan.
+The budget is for the entire worker container. **Before stopping the real worker**,
+measure the long-lived worker parent's Linux `/proc/<pid>/status` `VmHWM` during
+normal scheduled refreshes and training, and retain the largest observed value.
+Verify `/proc/<pid>/cmdline` identifies `python -m nordpool_predictor.worker`
+without `--job`; a genuine job child's OS `os.getppid()` identifies that parent.
+PostgreSQL backend PIDs are unrelated. Convert `VmHWM` from KiB to MiB by dividing
+by 1024, include any other persistent container-process overhead in the reserve,
+and supply that measured positive reserve with `--worker-parent-peak-mib`.
+Do not measure the stopped-worker CLI/one-off's own parent, guess a margin, or
+use zero. Approval records the child/self peak, measured resident-parent reserve
+and their combined peak, and checks the **sum** against the container budget.
+Missing/invalid parent evidence blocks approval. Older child-only approval files
+do not qualify; preserve/archive the old approval and remeasure rather than
+overwrite its immutable audit record.
 Model cache lifetime is one area in both production and approval. Switching
 areas releases the previous area's cached estimators; bootstrap retains only
 version IDs. Promotion also releases frozen estimators before loading their copied

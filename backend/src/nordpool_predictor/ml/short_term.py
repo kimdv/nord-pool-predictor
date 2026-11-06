@@ -687,10 +687,23 @@ async def evaluate_experiment(path: Path) -> dict:
     approval = json.loads(runtime.read_text()) if runtime.exists() else {}
     runtime_numbers = [
         approval.get(key, float("nan"))
-        for key in ("peak_mib", "memory_budget_mib", "ingestion_wait_seconds")
+        for key in (
+            "peak_mib",
+            "child_peak_mib",
+            "worker_parent_peak_mib",
+            "memory_budget_mib",
+            "ingestion_wait_seconds",
+        )
     ]
     result["runtime_approved"] = (
-        bool(np.isfinite(runtime_numbers).all())
+        all(type(value) in (int, float) and np.isfinite(value) for value in runtime_numbers)
+        and approval.get("child_peak_mib", -1) >= 0
+        and approval.get("worker_parent_peak_mib", 0) > 0
+        and approval.get("peak_mib", -1)
+        >= (
+            approval.get("child_peak_mib", float("inf"))
+            + approval.get("worker_parent_peak_mib", float("inf"))
+        )
         and approval.get("memory_budget_mib", 0) > 0
         and approval.get("approved") is True
         and approval.get("boundary_reviewed") is True
@@ -712,6 +725,7 @@ async def approve_runtime(
     ingestion_wait_seconds: float,
     boundary_reviewed: bool,
     training_on_target_reviewed: bool,
+    worker_parent_peak_mib: float | None = None,
 ) -> dict:
     """Run on the target NAS after checking queue delay and boundary diagnostics."""
     from nordpool_predictor.ml.predict import (
@@ -730,15 +744,21 @@ async def approve_runtime(
         raise ValueError(
             "Positive memory budget, measured queue delay and boundary review required"
         )
+    if (
+        worker_parent_peak_mib is None
+        or not np.isfinite(worker_parent_peak_mib)
+        or worker_parent_peak_mib <= 0
+    ):
+        raise ValueError("Measured worker-parent peak RSS in MiB is required")
     metadata = json.loads((path / "experiment.json").read_text())
-    report = await evaluate_experiment(path)
-    if report["status"] not in {"accepted", "awaiting_runtime_approval"}:
-        raise ValueError("Complete the fixed prospective holdout before runtime/boundary approval")
-    started = time.monotonic()
     active = await select_active_model(metadata["area"])
     if active is None or active[0] != metadata["base_model_version"]:
         raise ValueError("Runtime measurement requires the experiment's unchanged active version")
     active_version, production = active
+    report = await evaluate_experiment(path)
+    if report["status"] not in {"accepted", "awaiting_runtime_approval"}:
+        raise ValueError("Complete the fixed prospective holdout before runtime/boundary approval")
+    started = time.monotonic()
     long, short = await asyncio.to_thread(_components, path, metadata)
     features, _ = await asyncio.to_thread(
         _build_forecast_features, metadata["area"], datetime.now(UTC), DEFAULT_HORIZON_STEPS
@@ -746,6 +766,7 @@ async def approve_runtime(
     await asyncio.to_thread(_predict_quantiles, production, features)
     await asyncio.to_thread(_predict_quantiles, long, features)
     await asyncio.to_thread(_predict_quantiles, {**long, "short": short}, features)
+    child_peak_mib = max(_peak_mib(), metadata["training_runtime"]["peak_mib"])
     approval = {
         "host": socket.gethostname(),
         "training_host": metadata["training_runtime"]["host"],
@@ -754,7 +775,9 @@ async def approve_runtime(
         "metadata_sha256": hashlib.sha256((path / "experiment.json").read_bytes()).hexdigest(),
         "evidence_sha256": report["evidence_sha256"],
         "memory_budget_mib": memory_budget_mib,
-        "peak_mib": max(_peak_mib(), metadata["training_runtime"]["peak_mib"]),
+        "child_peak_mib": child_peak_mib,
+        "worker_parent_peak_mib": worker_parent_peak_mib,
+        "peak_mib": child_peak_mib + worker_parent_peak_mib,
         "training_seconds": metadata["training_runtime"]["seconds"],
         "inference_seconds": time.monotonic() - started,
         "ingestion_wait_seconds": ingestion_wait_seconds,
@@ -768,17 +791,22 @@ async def approve_runtime(
     return approval
 
 
-async def start_or_promote(area: str, active_version: str, frame: pd.DataFrame) -> tuple | None:
+async def start_or_promote(
+    area: str, active_version: str, frame: pd.DataFrame | None
+) -> tuple | None:
     """Called by existing retraining job; returning None preserves its active version."""
     import asyncio
 
     path = experiment_path(area)
     if path is None:
+        if frame is None:
+            raise ValueError("Training data is required to start a new experiment")
         await asyncio.to_thread(train_experiment, area, active_version, frame)
         logger.info(
             "Started prospective short-term experiment for %s; active model preserved", area
         )
         return None
+    del frame
     metadata = json.loads((path / "experiment.json").read_text())
     if metadata["base_model_version"] != active_version:
         raise ValueError(
