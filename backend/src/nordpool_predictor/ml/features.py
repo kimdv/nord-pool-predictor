@@ -91,6 +91,7 @@ def build_feature_matrix(
     end: datetime,
     *,
     horizon_seed: int = 42,
+    horizon_steps: int = DEFAULT_HORIZON_STEPS,
 ) -> pd.DataFrame:
     """Build the full feature matrix for *area* over ``[start, end)``.
 
@@ -98,6 +99,8 @@ def build_feature_matrix(
     then returns the complete DataFrame (including the extended rows whose
     lags may be partially ``NaN``).
     """
+    if not 1 <= horizon_steps <= DEFAULT_HORIZON_STEPS:
+        raise ValueError("Training horizon must be between 1 and 768 quarter hours")
     extended_start = start - timedelta(hours=360)
 
     df = load_prices(area, extended_start, end)
@@ -112,7 +115,7 @@ def build_feature_matrix(
     if df.empty:
         return df
     rng = np.random.default_rng(horizon_seed)
-    horizons = rng.integers(1, DEFAULT_HORIZON_STEPS + 1, size=len(df), dtype=np.int32)
+    horizons = rng.integers(1, horizon_steps + 1, size=len(df), dtype=np.int32)
     cutoffs = pd.Series(df.index - pd.to_timedelta(horizons * 15, unit="min"), index=df.index)
     df = add_issuance_price_features(df, history, cutoffs)
     df = add_weather_features(df, area, issued_at=cutoffs)

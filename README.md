@@ -350,6 +350,135 @@ Earlier models, including `v3-copenhagen` models with forecast-only cross-border
 inputs, are excluded; worker bootstrap retrains them before generating new forecasts. Historical models
 and forecasts remain stored.
 
+### Short-term specialist experiment
+
+The worker can compare a separate 48-hour specialist with the existing eight-day
+model. Both retain P10/P50/P90. A promoted package uses the specialist for steps
+1–192 and the long model for 193–768, with one model version and an unchanged API.
+Format-1 manifests and legacy models remain valid for the whole horizon. There
+is no post-prediction price-level correction in this implementation.
+
+When retraining an area that already has a usable active model, the job first
+creates a frozen comparison under `MODEL_DIR/short-term/<area>/`. The long and
+short variants use the same historical targets, seed and stricter shared tuning
+folds, but independently sample horizons 1–768 and 1–192. Both are fitted before
+the prospective test begins. Input matrices, parameters, source/commit identity,
+feature coverage and model-file hashes are saved. No experiment is written to
+production forecast tables, and the active model is retained while evidence is
+collected. First-install training still creates the existing long-only baseline.
+An existing trial is evaluated from its frozen evidence without preparing fresh
+training history; history preparation is required only when fitting a new trial
+or the first baseline.
+The holdout contains 28 full future Copenhagen dates, beginning at the next local
+midnight, with four fixed scheduler origins per date: 00:05, 06:05, 12:05, 18:05.
+All 112 origins must have one verified capture and complete outcomes. Canonical
+immutable slot files prevent extra captures from overweighting a good date.
+Every capture must contain each of the first 192 aligned quarter-hour targets
+exactly once, including targets whose prices were already known at issuance.
+The nullable `job_requests.scheduled_at` field carries scheduler provenance into
+worker children; public/manual triggers cannot assert it. Actual issuance and
+queue delay remain archived separately. Manual/debug captures are exploratory,
+even when made near a scheduled time. Captures stop at the fixed boundary;
+reporting also waits 48 hours for the last outcomes. A missed scheduled origin
+leaves this trial insufficient: do not replace it with a favorable later day or
+extend the frozen window. Reports distinguish missing captures from unsettled
+outcomes; no runtime approval is possible while either remains.
+
+Each successful production forecast also archives the experiment's paired
+predictions, exact input features and the spot prices received by issuance.
+Snapshots and later outcomes are immutable files. A capture must start and
+finish within 60 seconds of issuance to count as prospective; slower captures,
+historical `issued_at` calls and reconstructed publication times cannot promote
+a model. They remain exploratory. Hashes and timestamps are rechecked on report
+generation. Collect input snapshots before prices become known; current database
+prices cannot reconstruct a trustworthy historical input archive after revisions.
+
+Reports score only targets unknown at issuance, separately for 0–24, 24–48 and
+0–48 hours, with MAE, RMSE, bias, quantile loss, interval coverage and daily paired
+results. Acceptance needs 28 local issuance dates, 1,000 paired unknown quarters
+in each day bucket, at least 5% lower total MAE, at most 5% worse bucket MAE and
+quantile losses, at most 0.02 DKK/kWh more absolute bias, and at most five percentage
+points less interval coverage. Insufficient data and rejected candidates preserve
+the active model. Existing 24/72/168-hour accuracy fields keep their definitions.
+
+Prefer the existing scheduled retraining job for training. Every manual CLI
+command, including `report` and `approve-runtime`, requires the worker to be
+stopped and all surviving job processes to finish. It acquires the same worker
+and job-process locks and fails before doing work if either is occupied. Run one
+off container with the same image, environment and model volume, then restart
+the worker. For example, using the reference Compose service name (`worker`;
+substitute the actual NAS service name where different):
+
+```bash
+docker compose stop worker
+docker compose run --rm --no-deps worker python scripts/short_term_experiment.py report DK1
+docker compose start worker
+```
+
+In that same stopped-worker workflow, available commands from `backend` are:
+`python scripts/short_term_experiment.py train DK1`, `capture DK1`, `report DK1`,
+and `reproduce DK1`. `train` is optional if scheduled retraining already created
+an experiment and never activates a model. `capture` is a debug-only snapshot;
+it cannot fill a missing scheduled origin. Repeat for DK2. Restart the worker
+before the first frozen origin so normal scheduled refreshes can collect the
+verified trial. Keep files unchanged and do not tune after seeing test results.
+On Ctrl-C the CLI retains both locks while native fitting threads drain; stop
+the entire one-off container to terminate native work immediately.
+
+After the data gates pass, review the report's boundary diagnostics and measure
+ingestion queue delay from `job_requests.started_at - created_at` during training.
+Verify the recorded training was on the target NAS. Stop the worker and use
+the same exclusive one-off workflow on that NAS to run
+`python scripts/short_term_experiment.py approve-runtime DK1` with
+`--memory-budget-mib <actual-budget> --ingestion-wait-seconds <measured-delay>`
+and `--worker-parent-peak-mib <measured-parent-reserve>`
+and the explicit confirmations `--boundary-reviewed --training-on-target-reviewed`.
+This loads and predicts both the active production model and the frozen pair in
+one process, records peak RAM and inference time, and checks the declared memory
+budget. The 1536 MiB reference Compose limit is not proof of the actual NAS limit.
+Approval loads the selected production estimators before scanning the archived
+holdout, matching the worker's warm-cache overlap. Pending-trial evaluation drops
+its unused prepared training frame in both caller and callee before that scan.
+The budget is for the entire worker container. **Before stopping the real worker**,
+measure the long-lived worker parent's Linux `/proc/<pid>/status` `VmHWM` during
+normal scheduled refreshes and training, and retain the largest observed value.
+Verify `/proc/<pid>/cmdline` identifies `python -m nordpool_predictor.worker`
+without `--job`; a genuine job child's OS `os.getppid()` identifies that parent.
+PostgreSQL backend PIDs are unrelated. Convert `VmHWM` from KiB to MiB by dividing
+by 1024, include any other persistent container-process overhead in the reserve,
+and supply that measured positive reserve with `--worker-parent-peak-mib`.
+Do not measure the stopped-worker CLI/one-off's own parent, guess a margin, or
+use zero. Approval records the child/self peak, measured resident-parent reserve
+and their combined peak, and checks the **sum** against the container budget.
+Missing/invalid parent evidence blocks approval. Older child-only approval files
+do not qualify; preserve/archive the old approval and remeasure rather than
+overwrite its immutable audit record.
+Model cache lifetime is one area in both production and approval. Switching
+areas releases the previous area's cached estimators; bootstrap retains only
+version IDs. Promotion also releases frozen estimators before loading their copied
+package, so it does not keep two six-model copies alive during validation.
+Container hostname changes do not invalidate a frozen experiment. Runtime approval
+is immutable and bound to the experiment metadata and component identities.
+It also binds the exact settled holdout evidence, so boundary approval cannot be
+given early against a smaller or different set of outcomes. `reproduce` refits
+the frozen exact-precision input matrices and parameters without replacing any
+saved model, and reports differences from its archived predictions.
+
+The next normal retraining job rechecks the evidence, writes an independent
+six-file package, validates it, then activates one version in a worker-owned
+transaction. Rejected or failed work never deactivates the previous version. A
+bad sole-active paired package produces a visible failure and requires explicit
+operator rollback; it does not silently mix components or choose an inactive model.
+Feature importance keeps its existing response shape and describes the long
+component; short-component importance is stored separately in the manifest.
+
+Preserve experiment directories, outcome files and previous model artifacts for
+audit and rollback. To retry a rejected experiment, archive its `pending.json`
+pointer explicitly before starting another; do not alter its frozen evidence.
+Cancelling training can leave unregistered files, which are safe to archive.
+Do not deploy a candidate merely because unit tests pass: data gates, NAS runtime
+approval and the recovery procedure are separate requirements.
+
 Training metrics report non-null wind/solar sample counts, coverage fractions, and
 snapshot availability provenance. Sparse history and a missing wind or solar input
 are accepted. Only when both inputs are entirely absent does the durable retraining

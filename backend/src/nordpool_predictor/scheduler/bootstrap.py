@@ -33,7 +33,7 @@ async def ready_models() -> dict[str, str]:
             (
                 await session.execute(
                     text("""
-            SELECT area, model_version, artifact_path FROM model_versions
+            SELECT area, model_version, artifact_path, horizon_strategy FROM model_versions
             WHERE is_active = TRUE AND feature_set_version = 'v4-crossborder-history'
             ORDER BY trained_at DESC, model_version DESC
         """)
@@ -51,8 +51,11 @@ async def ready_models() -> dict[str, str]:
             version, _models = await select_usable_model(area, area_candidates)
         except ModelUnavailableError:
             logger.exception("Model artifacts unavailable for %s", area)
+            if any(row.get("horizon_strategy") == "paired_48h" for row in area_candidates):
+                raise
         else:
             ready[area] = version
+            del _models
     return ready
 
 

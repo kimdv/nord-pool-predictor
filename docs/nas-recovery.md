@@ -1,5 +1,43 @@
 # NAS recovery after the PostgreSQL driver failure
 
+## Paired 48-hour model packages
+
+An accepted short-term experiment is deployed as one active registration owning
+six immutable model files: three long-horizon and three short-horizon quantiles.
+No additional worker or container is required. Keep API and worker on the same
+verified backend digest, and preserve the existing model volume plus
+`MODEL_DIR/short-term/` comparison evidence. Before production cutover, test the
+package against a copy of the database/model directory and complete the data and
+NAS resource gates described in the README. The experiment CLI must run with the worker stopped; all commands also acquire
+the existing worker and job-process locks. Use a one-off worker-service container
+with the same image/environment/volumes, then restart the worker before the first
+frozen capture slot. Never run competing native training via `docker exec` in a
+live worker. A missing short component is a broken
+package, not permission to train or activate a replacement automatically.
+
+Runtime approval's memory budget is container-wide: measure the genuine resident
+worker parent's peak RSS while normal child jobs are running, before stopping
+the worker for the exclusive CLI. The required `--worker-parent-peak-mib` reserve
+is added to measured child/training peak memory. A CLI/one-off parent or a
+PostgreSQL backend PID is not that worker parent; absent parent proof and old
+child-only approval records cannot authorize promotion. See README for the
+`/proc` measurement and MiB conversion.
+
+For explicit rollback, stop model jobs, validate the preserved long-only version's
+artifacts with the matching backend, and record the currently active version ID.
+In one database transaction deactivate that area's current registration and
+reactivate the verified predecessor. Use a precise area/version pair and confirm
+exactly one active row before committing. Restart the single worker and generate
+a new complete long-only forecast: changing an active registration does not change
+the already persisted latest forecast. If code also needs rollback, restore API
+and worker together to the saved digest. Preserve model files, experiment evidence,
+and forecast history; do not delete volumes or rewrite old runs.
+
+If a promotion committed but the worker stopped before deleting `pending.json`,
+the next experiment check reports that the active version changed. Validate the
+active package and archive that stale pointer explicitly; do not repeat promotion
+or change the frozen experiment metadata to bypass the identity check.
+
 The confirmed failure was SQLAlchemy 2.1 selecting `psycopg` for an unspecified
 synchronous driver while the image installed `psycopg2`. The correction explicitly
 selects `psycopg2`. Do not install packages into the running container as a permanent fix.

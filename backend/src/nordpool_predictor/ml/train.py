@@ -78,7 +78,8 @@ def _objective(
     }
 
     fold_maes: list[float] = []
-    for fold, (train_idx, val_idx) in enumerate(tscv.split(X), start=1):
+    folds = tscv.split(X) if hasattr(tscv, "split") else tscv
+    for fold, (train_idx, val_idx) in enumerate(folds, start=1):
         X_val = X.iloc[val_idx]
         issuances = X_val.index - pd.to_timedelta(
             X_val[HORIZON_STEP_FEATURE].to_numpy() * 15, unit="min"
@@ -245,16 +246,37 @@ async def train_models(
         settings.training_window_days,
     )
 
-    training_data = await prepare_training_data(area, production_backfill=production_backfill)
-    model_version, artifact_path, metrics, _models, now = await asyncio.to_thread(
-        _train_sync,
-        area,
-        settings.training_window_days,
-        settings.model_dir,
-        training_data,
-    )
+    experiment = None
+    from nordpool_predictor.ml.predict import select_active_model
+    from nordpool_predictor.ml.short_term import experiment_path, start_or_promote
+
+    active = await select_active_model(area)
+    training_data = None
+    if active is None or experiment_path(area) is None:
+        training_data = await prepare_training_data(area, production_backfill=production_backfill)
+    if active is not None:
+        previous_version = active[0]
+        del active
+        promoted = await start_or_promote(area, previous_version, training_data)
+        if promoted is None:
+            return previous_version
+        model_version, artifact_path, metrics, experiment = promoted
+        now = datetime.now(UTC)
+    else:
+        previous_version = None
+        model_version, artifact_path, metrics, _models, now = await asyncio.to_thread(
+            _train_sync,
+            area,
+            settings.training_window_days,
+            settings.model_dir,
+            training_data,
+        )
 
     async def register_model(connection) -> None:
+        if previous_version is not None:
+            active = await select_active_model(area, connection=connection)
+            if active is None or active[0] != previous_version:
+                raise RuntimeError("Active model changed during experiment promotion")
         await connection.execute(
             text(
                 "UPDATE model_versions SET is_active = FALSE "
@@ -279,7 +301,7 @@ async def train_models(
                 "model_version": model_version,
                 "model_type": "lgbm_quantile",
                 "area": area,
-                "horizon_strategy": "direct",
+                "horizon_strategy": "paired_48h" if experiment is not None else "direct",
                 "feature_set_version": "v4-crossborder-history",
                 "trained_at": now,
                 "metrics_json": json.dumps(metrics),
@@ -298,13 +320,9 @@ async def train_models(
         logger.exception("Failed to register model %s for %s", model_version, area)
         raise
 
-    logger.info(
-        "Registered %s — MAE=%.4f  RMSE=%.4f  bias=%.4f",
-        model_version,
-        metrics["mae"],
-        metrics["rmse"],
-        metrics["bias"],
-    )
+    if experiment is not None:
+        (experiment.parent / "pending.json").unlink()
+    logger.info("Registered %s — metrics=%s", model_version, metrics)
     return model_version
 
 
@@ -324,29 +342,9 @@ def production_training_metrics(frame: pd.DataFrame) -> dict:
 
 
 async def _has_usable_active_model(area: str) -> bool:
-    from nordpool_predictor.ml.predict import ModelUnavailableError, select_usable_model
+    from nordpool_predictor.ml.predict import select_active_model
 
-    async with get_session() as session:
-        candidates = (
-            (
-                await session.execute(
-                    text("""
-            SELECT model_version, artifact_path FROM model_versions
-            WHERE area = :area AND is_active = TRUE
-              AND feature_set_version = 'v4-crossborder-history'
-            ORDER BY trained_at DESC, model_version DESC
-        """),
-                    {"area": area},
-                )
-            )
-            .mappings()
-            .all()
-        )
-    try:
-        await select_usable_model(area, candidates)
-    except ModelUnavailableError:
-        return False
-    return True
+    return await select_active_model(area) is not None
 
 
 async def prepare_training_data(
