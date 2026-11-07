@@ -21,6 +21,48 @@ from nordpool_predictor import tariffs
 CPH = ZoneInfo("Europe/Copenhagen")
 
 
+@pytest.mark.parametrize("lookup", ["companies", "codes"])
+async def test_tariff_selectors_keep_old_active_records_and_exclude_expired(monkeypatch, lookup):
+    tariffs._tariff_cache.clear()
+    records = [
+        {
+            "ChargeOwner": "Elektrus A/S",
+            "GLN_Number": "5790000836239",
+            "ChargeTypeCode": "6000114",
+            "ValidFrom": "2026-04-17T00:00:00",
+            "ValidTo": "2027-01-01T00:00:00",
+        },
+        {
+            "ChargeOwner": "Expired company",
+            "GLN_Number": "5790000000000",
+            "ChargeTypeCode": "expired",
+            "ValidFrom": "2026-04-01T00:00:00",
+            "ValidTo": "2026-11-07T00:00:00",
+        },
+        {
+            "ChargeOwner": "Future company",
+            "GLN_Number": "5790000000001",
+            "ChargeTypeCode": "future",
+            "ValidFrom": "2026-11-08T00:00:00",
+            "ValidTo": None,
+        },
+    ]
+    request = AsyncMock(return_value=records)
+    monkeypatch.setattr(tariffs, "eds_get", request)
+    with time_machine.travel("2026-11-07T12:00:00+00:00", tick=False):
+        if lookup == "companies":
+            result = await tariffs.fetch_grid_companies()
+            assert result == [{"gln": "5790000836239", "name": "Elektrus A/S"}]
+        else:
+            result = await tariffs.fetch_grid_tariff_codes("5790000836239")
+            assert result == [{"code": "6000114", "note": "", "description": ""}]
+    params = request.await_args.args[1]
+    assert "start" not in params
+    assert params["limit"] == "0"
+    assert params["end"] == "2026-11-08"
+    tariffs._tariff_cache.clear()
+
+
 @pytest.fixture
 def stub_tariffs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Replace EDS-backed tariff lookups with deterministic in-memory values."""

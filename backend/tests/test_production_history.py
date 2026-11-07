@@ -17,9 +17,15 @@ from nordpool_predictor.ml.features import TARGET
 
 
 @pytest.mark.parametrize("source", ["energidataservice_forecast", "energidataservice_forecast_v2"])
-async def test_six_months_of_legacy_aggregates_remain_usable(sync_database, source):
+@pytest.mark.parametrize("database_timezone", ["UTC", "Europe/Copenhagen"])
+async def test_six_months_of_legacy_aggregates_remain_usable(
+    sync_database, source, database_timezone
+):
     targets = pd.date_range("2026-01-01 12:00Z", periods=180, freq="D")
     with sync_database.begin() as conn:
+        conn.execute(
+            text("SELECT set_config('TimeZone', :zone, false)"), {"zone": database_timezone}
+        )
         conn.execute(
             text("""
             INSERT INTO production_forecasts

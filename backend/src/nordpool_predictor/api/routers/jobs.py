@@ -3,15 +3,26 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import text
 
 from nordpool_predictor.api.schemas.health import JobRunResponse, JobSummary
+from nordpool_predictor.config import get_settings
 from nordpool_predictor.database import get_session
 from nordpool_predictor.scheduler.queue import JOB_NAMES, cancel_job, enqueue_job
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+
+def _require_job_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if origin is not None:
+        allowed = {str(request.base_url).rstrip("/"), *get_settings().cors_origins_list}
+        if origin not in allowed:
+            raise HTTPException(status_code=403, detail="Cross-origin job changes are not allowed")
+    elif request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-origin job changes are not allowed")
 
 
 @router.get("", response_model=list[JobRunResponse])
@@ -40,7 +51,7 @@ async def list_jobs(
     ]
 
 
-@router.post("/trigger/{job_name}", status_code=202)
+@router.post("/trigger/{job_name}", status_code=202, dependencies=[Depends(_require_job_origin)])
 async def trigger_job(job_name: str) -> dict[str, str]:
     if job_name not in JOB_NAMES | {"bootstrap"}:
         raise HTTPException(status_code=404, detail=f"Unknown job: {job_name}")
@@ -50,7 +61,7 @@ async def trigger_job(job_name: str) -> dict[str, str]:
     return {"status": "pending", "job": job_name, "job_id": str(job_id)}
 
 
-@router.post("/cancel/{job_name}", status_code=202)
+@router.post("/cancel/{job_name}", status_code=202, dependencies=[Depends(_require_job_origin)])
 async def cancel_job_request(job_name: str) -> dict[str, str]:
     if job_name not in JOB_NAMES | {"bootstrap"}:
         raise HTTPException(status_code=404, detail=f"Unknown job: {job_name}")

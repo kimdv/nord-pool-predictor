@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pandas as pd
 import pytest
+from sqlalchemy import text
 
+from nordpool_predictor.ml import features
 from nordpool_predictor.ml.features import (
     HORIZON_STEP_FEATURE,
     LAG_HORIZON_LIMITS,
@@ -19,6 +21,32 @@ from nordpool_predictor.ml.features import (
 
 def _quarter_index(start: str, periods: int) -> pd.DatetimeIndex:
     return pd.date_range(start, periods=periods, freq="15min", tz=UTC)
+
+
+@pytest.mark.parametrize("start", ["2026-03-29T00:00Z", "2026-10-25T00:00Z"])
+@pytest.mark.parametrize("database_timezone", ["UTC", "Europe/Copenhagen"])
+async def test_load_prices_preserves_slots_across_database_offset_changes(
+    sync_database, monkeypatch, start, database_timezone
+):
+    targets = pd.date_range(start, periods=12, freq="15min")
+    with sync_database.begin() as conn:
+        conn.execute(
+            text("SELECT set_config('TimeZone', :zone, false)"), {"zone": database_timezone}
+        )
+        conn.execute(
+            text("""
+                INSERT INTO price_observations (area, ts, price_dkk_kwh, source)
+                VALUES ('DK1', :ts, :price, 'test')
+            """),
+            [{"ts": ts.to_pydatetime(), "price": i / 10} for i, ts in enumerate(targets)],
+        )
+    monkeypatch.setattr(features, "_get_sync_engine", lambda: sync_database)
+
+    frame = features.load_prices("DK1", targets[0], targets[-1] + timedelta(minutes=15))
+
+    assert frame.index.tolist() == targets.tolist()
+    assert str(frame.index.tz) == "UTC"
+    assert frame[TARGET].tolist() == [i / 10 for i in range(len(targets))]
 
 
 # ---------------------------------------------------------------------------

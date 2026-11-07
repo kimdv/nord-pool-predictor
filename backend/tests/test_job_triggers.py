@@ -65,3 +65,36 @@ async def test_cancel_job(job_name, result, status):
         operation.assert_awaited_once_with(job_name)
     if status == 202:
         assert response.json() == {"status": result, "job": job_name}
+
+
+@pytest.mark.parametrize("action", ["trigger", "cancel"])
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Origin": "https://attacker.example"}, 403),
+        ({"Origin": "null"}, 403),
+        ({"Sec-Fetch-Site": "cross-site"}, 403),
+        ({"Origin": "http://test"}, 202),
+        ({"Origin": "http://localhost:3000", "Sec-Fetch-Site": "cross-site"}, 202),
+        ({}, 202),
+    ],
+)
+async def test_job_changes_reject_cross_origin_forms(action, headers, expected, test_settings):
+    app = FastAPI()
+    app.include_router(router)
+    operation = AsyncMock(return_value="00000000-0000-0000-0000-000000000001")
+    name = "enqueue_job" if action == "trigger" else "cancel_job"
+    with (
+        patch(f"nordpool_predictor.api.routers.jobs.{name}", operation),
+        patch("nordpool_predictor.api.routers.jobs.get_settings", return_value=test_settings),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                f"/api/jobs/{action}/retrain_model", headers=headers, data={"job": "retrain_model"}
+            )
+
+    assert response.status_code == expected
+    if expected == 403:
+        operation.assert_not_awaited()
+    else:
+        operation.assert_awaited_once_with("retrain_model")

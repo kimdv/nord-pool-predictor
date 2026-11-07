@@ -59,6 +59,13 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> },
 ) {
+  const origin = request.headers.get("origin");
+  const host = request.headers.get("host") ?? request.nextUrl.host;
+  if (request.headers.get("sec-fetch-site") === "cross-site" ||
+      (origin !== null && origin !== `${request.nextUrl.protocol}//${host}`)) {
+    return NextResponse.json({ error: "Cross-origin request rejected" }, { status: 403 });
+  }
+
   const { path } = await params;
   const joined = path.join("/");
 
