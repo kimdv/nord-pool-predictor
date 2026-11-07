@@ -99,7 +99,7 @@ def load_asof_covariates(
                 query,
                 conn,
                 params={"targets": targets, "owners": owners, "source": SOURCE},
-                parse_dates=["ts"],
+                parse_dates={"ts": {"utc": True}},
             )
         return df.join(values.set_index("ts"), how="left")
     else:
@@ -125,7 +125,10 @@ def load_asof_covariates(
     """)
     with engine.connect() as conn:
         values = pd.read_sql(
-            query, conn, params={"targets": targets, "owners": owners}, parse_dates=["ts"]
+            query,
+            conn,
+            params={"targets": targets, "owners": owners},
+            parse_dates={"ts": {"utc": True}},
         )
     if values.empty:
         columns = {

@@ -24,6 +24,34 @@ async def test_weather_requests_can_be_scoped_to_one_area(test_settings):
         await weather.ingest_weather_forecasts(area="DK2")
     request.assert_awaited_once()
     assert request.await_args.args[2]["latitude"] == "55.0"
+    assert request.await_args.args[2]["forecast_days"] == 10
+    assert request.await_args.args[2]["wind_speed_unit"] == "kmh"
+
+
+async def test_weather_availability_is_recorded_after_each_response(test_settings):
+    from nordpool_predictor.ingestion import weather
+
+    received = [
+        datetime(2026, 11, 7, 13, 21, 37, 123, tzinfo=UTC),
+        datetime(2026, 11, 7, 13, 22, 42, 456, tzinfo=UTC),
+    ]
+    clock = MagicMock(wraps=datetime)
+    clock.now.return_value = datetime(2026, 11, 7, 13, 20, 59, tzinfo=UTC)
+    responses = iter(received)
+
+    async def receive(*args):
+        clock.now.return_value = next(responses)
+        return {"hourly": {"time": ["2026-11-07T14:00"], "temperature_2m": [5.0]}}
+
+    with (
+        patch.object(weather, "get_settings", return_value=test_settings),
+        patch.object(weather, "datetime", clock),
+        patch.object(weather, "_request_with_retry", side_effect=receive),
+        patch.object(weather, "_upsert_forecasts", AsyncMock(return_value=1)) as persist,
+    ):
+        await weather.ingest_weather_forecasts()
+
+    assert [call.args[1] for call in persist.await_args_list] == received
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import AreaSwitcher, { useSelectedArea } from "@/components/area-switcher";
+import AreaSwitcher, { isAreaCode, useSelectedArea } from "@/components/area-switcher";
 import StatCard from "@/components/stat-card";
 import JobStatus from "@/components/job-status";
 import AreaCharts from "@/components/area-charts";
@@ -35,7 +35,8 @@ export default function DashboardContent({
   summaryAsOf: number;
 }) {
   const router = useRouter();
-  const { selected, select } = useSelectedArea();
+  const availableAreas = areaData.map((data) => data.info.code).filter(isAreaCode);
+  const { selected, select } = useSelectedArea(availableAreas);
   const { selection: gridSelection, update: updateGrid } = useGridSelection();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [summaryAtRefreshStart, setSummaryAtRefreshStart] = useState<number | null>(null);
@@ -70,7 +71,7 @@ export default function DashboardContent({
     if (!refreshing) refreshRef.current?.complete();
   }, [refreshing, refreshVersion]);
 
-  const current = areaData.find((d) => d.info.code === selected) ?? areaData[0];
+  const current = areaData.find((d) => d.info.code === selected);
 
   const summaryIsCurrent = refreshing || summaryAtRefreshStart !== summaryAsOf;
   const attributes = summaryIsCurrent ? current?.ha?.attributes : undefined;
@@ -103,7 +104,7 @@ export default function DashboardContent({
           <p>Se dagens elpriser og prognosen for de næste syv dage.</p>
         </div>
         <div className="dashboard-settings">
-          <div className="setting-field"><span>Prisområde</span><AreaSwitcher selected={selected} onSelect={select} /></div>
+          <div className="setting-field"><span>Prisområde</span><AreaSwitcher selected={selected} onSelect={select} available={availableAreas} /></div>
           <div className="setting-field"><span>Dit netselskab</span><GridCompanySelector selection={gridSelection} onSelect={updateGrid} /></div>
         </div>
       </section>

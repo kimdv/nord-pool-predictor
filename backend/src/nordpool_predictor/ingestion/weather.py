@@ -116,7 +116,6 @@ async def ingest_weather_forecasts(*, area: str | None = None) -> None:
         logger.warning("No weather points configured; skipping forecast ingestion")
         return
 
-    issued_at = datetime.now(UTC).replace(second=0, microsecond=0)
     total = 0
 
     async with httpx.AsyncClient() as client:
@@ -126,13 +125,16 @@ async def ingest_weather_forecasts(*, area: str | None = None) -> None:
                 "longitude": str(wp.lon),
                 "hourly": HOURLY_VARS,
                 "timezone": "UTC",
+                "forecast_days": 10,
+                # Preserve the units used by stored history and existing models.
+                "wind_speed_unit": "kmh",
             }
             data = await _request_with_retry(client, FORECAST_URL, params)
             rows = _parse_hourly(data, wp.id)
             if not rows:
                 logger.warning("No forecast data returned for %s", wp.id)
                 continue
-            count = await _upsert_forecasts(rows, issued_at)
+            count = await _upsert_forecasts(rows, datetime.now(UTC))
             total += count
             logger.info("Ingested %d forecast rows for %s", count, wp.id)
 

@@ -10,13 +10,14 @@ import { chromium } from "playwright";
 const baseURL = process.env.BROWSER_TEST_URL ?? "http://127.0.0.1:3106";
 const codes = ["C", "B", "A"].map((code) => ({ code, note: `Nettarif ${code}`, description: "" }));
 let price, failHA, failTariff, haDelay, haRequests, tariffRequests;
-let jobSummaries, sources;
+let jobSummaries, sources, areas, jobCommands;
 let browser, context, page, runtimeErrors;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://test");
+  if (req.method === "POST" && url.pathname.startsWith("/api/jobs/")) jobCommands++;
   let body = [];
   let status = 200;
-  if (url.pathname === "/api/areas") body = [{ code: "DK1", label: "Vestdanmark", weather_points: [] }];
+  if (url.pathname === "/api/areas") body = areas;
   else if (url.pathname === "/api/health") body = { status: "ok", sources, degraded: false };
   else if (url.pathname === "/api/jobs/summary") body = jobSummaries;
   else if (url.pathname.startsWith("/api/jobs/cancel/") && req.method === "POST") {
@@ -26,7 +27,7 @@ const server = createServer(async (req, res) => {
     status = 202;
     body = { status: "cancelled", job };
   }
-  else if (url.pathname === "/api/ha/DK1") {
+  else if (url.pathname.startsWith("/api/ha/")) {
     haRequests++;
     await delay(haDelay);
     status = failHA ? 503 : 200;
@@ -68,6 +69,8 @@ beforeEach(async () => {
   failHA = failTariff = false;
   haDelay = haRequests = tariffRequests = 0;
   jobSummaries = [];
+  jobCommands = 0;
+  areas = [{ code: "DK1", label: "Vestdanmark", weather_points: [] }];
   sources = [];
   context = await browser.newContext();
   page = await context.newPage();
@@ -300,4 +303,46 @@ test("Copenhagen midnight refreshes tariffs and a failure does not show yesterda
   await error.waitFor();
   assert.ok(tariffRequests > before);
   assert.equal(await page.getByRole("button", { name: "Nettarif", exact: true }).count(), 0);
+});
+
+test("cross-origin form POSTs cannot cancel worker jobs", async () => {
+  await page.goto("http://127.0.0.1:8000/api/areas");
+  await page.setContent(`<form method="POST" action="${baseURL}/api/backend/jobs/cancel/bootstrap"><button>Submit</button></form>`);
+  const response = page.waitForResponse((response) => response.url().includes("/api/backend/jobs/cancel/bootstrap"));
+  await page.getByRole("button", { name: "Submit" }).click();
+  assert.equal((await response).status(), 403);
+  assert.equal(jobCommands, 0);
+});
+
+for (const [code, unavailable, label] of [["DK2", "DK1", "Østdanmark"], ["DK1", "DK2", "Vestdanmark"]]) {
+  test(`a ${code}-only backend ignores a saved ${unavailable} selection`, async () => {
+    areas = [{ code, label, weather_points: [] }];
+    await page.evaluate((value) => localStorage.setItem("preferredArea", value), unavailable);
+    const requests = [];
+    page.on("request", (request) => {
+      if (/\/api\/backend\/(prices|forecasts)\//.test(request.url())) requests.push(new URL(request.url()).pathname);
+    });
+    const latest = page.waitForResponse((response) => response.url().endsWith(`/forecasts/${code}/latest`));
+    await page.reload();
+    await page.locator(".price-context").filter({ hasText: `${label} / ${code}` }).waitFor();
+    await latest;
+    assert.equal(await page.getByRole("button", { name: code === "DK1" ? "Vest (DK1)" : "Øst (DK2)", exact: true }).getAttribute("aria-pressed"), "true");
+    assert.equal(await page.getByRole("button", { name: unavailable === "DK1" ? "Vest (DK1)" : "Øst (DK2)", exact: true }).count(), 0);
+    assert.ok(requests.length > 0);
+    assert.ok(requests.every((path) => !path.includes(`/${unavailable}`)), requests.join(", "));
+    assert.match(await page.locator(".current-price-value").innerText(), /0.50/);
+  });
+}
+
+
+test("POST protection rejects opaque origins and cross-site metadata, while allowing non-browser clients", async () => {
+  const url = `${baseURL}/api/backend/jobs/cancel/bootstrap`;
+  for (const headers of [{ origin: "null" }, { "sec-fetch-site": "cross-site" }]) {
+    const response = await page.request.post(url, { headers });
+    assert.equal(response.status(), 403);
+  }
+  assert.equal(jobCommands, 0);
+  const response = await page.request.post(url);
+  assert.equal(response.status(), 202);
+  assert.equal(jobCommands, 1);
 });

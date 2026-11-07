@@ -70,7 +70,7 @@ def load_prices(area: str, start: datetime, end: datetime) -> pd.DataFrame:
             query,
             conn,
             params={"area": area, "start": start, "end": end},
-            parse_dates=["ts"],
+            parse_dates={"ts": {"utc": True}},
         )
     if df.empty:
         return pd.DataFrame(columns=[TARGET])

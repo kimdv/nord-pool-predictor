@@ -67,6 +67,12 @@ class TariffUnavailableError(ValueError):
 VAT_RATE = 0.25
 
 
+def _valid_on(record: dict[str, Any], day: date) -> bool:
+    valid_from = datetime.fromisoformat(record["ValidFrom"]).date()
+    valid_to = datetime.fromisoformat(record["ValidTo"]).date() if record.get("ValidTo") else None
+    return valid_from <= day and (valid_to is None or day < valid_to)
+
+
 def _extract_hourly_prices(record: dict[str, Any]) -> list[float]:
     """Extract Price1..Price24 from a DatahubPricelist record.
 
@@ -83,18 +89,19 @@ def _extract_hourly_prices(record: dict[str, Any]) -> list[float]:
 
 async def fetch_grid_companies() -> list[dict[str, str]]:
     """Return distinct grid companies that have D03 (tariff) entries."""
-    cached = _cache_get("grid_companies")
+    day = datetime.now(CPH_TZ).date()
+    cache_key = f"grid_companies:{day}"
+    cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
     records = await eds_get(
         DATAHUB_DATASET,
         {
-            "start": "StartOfMonth-P6M",
-            "end": "now",
+            "end": (day + timedelta(days=1)).isoformat(),
             "filter": '{"ChargeType":["D03"]}',
-            "columns": "ChargeOwner,GLN_Number",
-            "sort": "ChargeOwner ASC",
+            "columns": "ChargeOwner,GLN_Number,ValidFrom,ValidTo",
+            "sort": "ValidFrom DESC",
             "limit": "0",
         },
         respect_rate_limit=False,
@@ -102,6 +109,8 @@ async def fetch_grid_companies() -> list[dict[str, str]]:
 
     seen: dict[str, str] = {}
     for r in records:
+        if not _valid_on(r, day):
+            continue
         gln = r["GLN_Number"]
         if gln not in seen and gln != ENERGINET_GLN:
             seen[gln] = r["ChargeOwner"]
@@ -110,13 +119,14 @@ async def fetch_grid_companies() -> list[dict[str, str]]:
         [{"gln": gln, "name": name} for gln, name in seen.items()],
         key=lambda x: x["name"],
     )
-    _cache_set("grid_companies", result)
+    _cache_set(cache_key, result)
     return result
 
 
 async def fetch_grid_tariff_codes(gln: str) -> list[dict[str, str]]:
     """Return available D03 tariff codes for a grid company."""
-    cache_key = f"tariff_codes:{gln}"
+    day = datetime.now(CPH_TZ).date()
+    cache_key = f"tariff_codes:{gln}:{day}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -124,18 +134,19 @@ async def fetch_grid_tariff_codes(gln: str) -> list[dict[str, str]]:
     records = await eds_get(
         DATAHUB_DATASET,
         {
-            "end": "now",
-            "start": "StartOfMonth-P6M",
+            "end": (day + timedelta(days=1)).isoformat(),
             "filter": f'{{"GLN_Number":["{gln}"],"ChargeType":["D03"]}}',
-            "columns": "ChargeTypeCode,Note,Description",
+            "columns": "ChargeTypeCode,Note,Description,ValidFrom,ValidTo",
             "sort": "ValidFrom DESC",
-            "limit": "200",
+            "limit": "0",
         },
         respect_rate_limit=False,
     )
 
     seen: dict[str, dict[str, str]] = {}
     for r in records:
+        if not _valid_on(r, day):
+            continue
         code = r["ChargeTypeCode"]
         if code not in seen:
             seen[code] = {
@@ -173,11 +184,7 @@ async def _fetch_latest_tariff(
         )
         _cache_set(cache_key, (day, records))
     for record in records:
-        valid_from = datetime.fromisoformat(record["ValidFrom"]).date()
-        valid_to = (
-            datetime.fromisoformat(record["ValidTo"]).date() if record.get("ValidTo") else None
-        )
-        if valid_from <= day and (valid_to is None or day < valid_to):
+        if _valid_on(record, day):
             return _extract_hourly_prices(record)
     raise TariffUnavailableError("No tariff data available for the requested day")
 
