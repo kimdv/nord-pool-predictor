@@ -118,6 +118,27 @@ test("today stays beside the current price with the seven-day forecast below", a
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 });
 
+test("the analysis navigation target stays available while area data loads", async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/backend/forecasts/DK1/accuracy**", async (route) => {
+    await pending;
+    await route.fulfill({ json: [] });
+  });
+  try {
+    await page.reload();
+    await page.getByLabel("Henter prisdata").waitFor();
+    await page.getByRole("link", { name: "Prognoseanalyse", exact: true }).click();
+    await page.waitForURL("**/#analyse");
+    assert.equal(new URL(page.url()).hash, "#analyse");
+    await page.locator("#analyse > summary").waitFor();
+  } finally {
+    release();
+  }
+  await page.getByLabel("Henter prisdata").waitFor({ state: "detached" });
+  await page.locator("#analyse > summary").waitFor();
+});
+
 test("forecast accuracy is secondary, below the breakdown, and collapsed by default", async () => {
   const analysis = page.locator("#analyse");
   const summary = analysis.locator("summary");

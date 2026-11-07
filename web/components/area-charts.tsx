@@ -39,6 +39,10 @@ export default function AreaCharts({
         </div>
         <section className="card p-6" aria-label="Syvdagesprognose"><ChartSkeleton height="h-96" /></section>
         {children}
+        <details id="analyse" className="forecast-analysis">
+          <summary>Prognosens præcision</summary>
+          <ChartSkeleton height="h-48" />
+        </details>
       </div>
     );
   }
