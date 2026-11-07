@@ -99,8 +99,8 @@ export default function DashboardContent({
     <div className="dashboard-shell">
       <section className="dashboard-intro" aria-labelledby="dashboard-title">
         <div>
-          <h1 id="dashboard-title">Elprisen, syv dage frem.</h1>
-          <p>Følg prisprognosen, undersøg usikkerheden og mål modellens præcision.</p>
+          <h1 id="dashboard-title">Elprisen i dag.</h1>
+          <p>Se dagens elpriser og prognosen for de næste syv dage.</p>
         </div>
         <div className="dashboard-settings">
           <div className="setting-field"><span>Prisområde</span><AreaSwitcher selected={selected} onSelect={select} /></div>

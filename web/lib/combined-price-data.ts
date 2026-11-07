@@ -21,9 +21,10 @@ export function buildCombinedData(
   prices: PricesResponse | null,
   forecast: ForecastResponse | null,
   now = new Date(),
+  window = priceChartWindow(now),
 ): CombinedPoint[] {
   const map = new Map<number, CombinedPoint>();
-  const { start, end } = priceChartWindow(now);
+  const { start, end } = window;
 
   for (const price of prices?.prices ?? []) {
     const time = new Date(price.ts).getTime();

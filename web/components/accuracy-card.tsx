@@ -20,16 +20,16 @@ function Badge({ label }: { label: string | null }) {
 export default function AccuracyCard({ records }: { records: AccuracyRecord[] }) {
   if (records.length === 0) {
     return (
-      <div className="card p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-2">Seneste prognosenøjagtighed</h2>
+      <div className="min-w-0">
+        <h2 className="text-sm font-medium text-gray-500 mb-2">Seneste prognosenøjagtighed</h2>
         <p className="text-sm text-gray-400">Ingen nøjagtighedsdata tilgængelig endnu.</p>
       </div>
     );
   }
 
   return (
-    <div className="card p-6">
-      <h2 className="text-lg font-semibold text-gray-900 mb-4">Seneste prognosenøjagtighed</h2>
+    <div className="min-w-0">
+      <h2 className="text-sm font-medium text-gray-500 mb-4">Seneste prognosenøjagtighed</h2>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>

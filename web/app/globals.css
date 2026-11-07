@@ -93,8 +93,11 @@
   .section-heading { display: flex; justify-content: space-between; align-items: center; margin: 44px 0 20px; }
   .section-heading h2 { font-size: 27px; font-weight: 600; }
   .section-heading p { font-size: 13px; line-height: 1.6; color: var(--muted); margin-top: 6px; }
+  .forecast-analysis { border-top: 1px solid var(--line); color: var(--muted); }
+  .forecast-analysis > summary { padding-block: 16px; cursor: pointer; font-size: 13px; font-weight: 500; }
+  .forecast-analysis > summary:hover { color: var(--ink); }
+  .forecast-analysis > .analysis-grid { padding-block: 8px 20px; }
   .analysis-grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 24px; align-items: start; }
-  .analysis-grid > .card { min-width: 0; }
   .analysis-grid table { font-variant-numeric: tabular-nums; }
   .tariff-empty { background: #e3edf2; padding: 26px 30px; border-color: #cedee7; }
   .tariff-empty h2 { font-size: 20px; }
