@@ -7,8 +7,8 @@ function fmtNum(n: number | null | undefined, decimals = 4): string {
 
 export default function BenchmarkTable({ benchmarks }: { benchmarks: BenchmarkResponse }) {
   return (
-    <div className="card p-6">
-      <h2 className="text-lg font-semibold text-gray-900 mb-4">Model vs basislinjer</h2>
+    <div className="min-w-0">
+      <h2 className="text-sm font-medium text-gray-500 mb-4">Model vs basislinjer</h2>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>

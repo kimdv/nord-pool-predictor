@@ -37,10 +37,12 @@ export default function AreaCharts({
           {overview}
           <div className="forecast-panel"><ChartSkeleton height="h-96" /></div>
         </div>
-        <section id="analyse" aria-label="Prognoseanalyse">
-          <ChartSkeleton height="h-48" />
-        </section>
+        <section className="card p-6" aria-label="Syvdagesprognose"><ChartSkeleton height="h-96" /></section>
         {children}
+        <details id="analyse" className="forecast-analysis">
+          <summary>Prognosens præcision</summary>
+          <ChartSkeleton height="h-48" />
+        </details>
       </div>
     );
   }
@@ -57,18 +59,18 @@ export default function AreaCharts({
               retrying={loading}
             />
           )}
-          {(!(errors.prices || errors.forecast) || data.combined.length > 0) && (
-            <PriceChart data={data.combined} productionHorizon={data.productionHorizon} historicalRange={data.historicalRange} />
+          {(!(errors.prices || errors.forecast) || data.today.length > 0) && (
+            <PriceChart data={data.today} period="today" historicalRange={null} />
           )}
         </div>
       </div>
-      <section id="analyse" aria-labelledby="analysis-title">
-        <div className="section-heading">
-          <div>
-            <h2 id="analysis-title">Hvor præcis er prognosen?</h2>
-            <p>Se de seneste resultater og sammenlign med enkle prismodeller.</p>
-          </div>
-        </div>
+      <section className="card p-6" aria-label="Syvdagesprognose">
+        {errors.forecast && <RequestError message={errors.forecast} onRetry={retry} retrying={loading} />}
+        <PriceChart data={data.combined} productionHorizon={data.productionHorizon} historicalRange={data.historicalRange} />
+      </section>
+      {children}
+      <details id="analyse" className="forecast-analysis">
+        <summary>Prognosens præcision</summary>
         <div className="analysis-grid">
           {errors.accuracy && (
             <RequestError message={errors.accuracy} onRetry={retry} retrying={loading} />
@@ -81,8 +83,7 @@ export default function AreaCharts({
           )}
           {data.benchmarks && <BenchmarkTable benchmarks={data.benchmarks} />}
         </div>
-      </section>
-      {children}
+      </details>
     </div>
   );
 }

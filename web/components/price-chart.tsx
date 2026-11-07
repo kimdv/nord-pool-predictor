@@ -26,18 +26,23 @@ export default function PriceChart({
   data,
   productionHorizon,
   historicalRange,
+  period = "forecast",
 }: {
+  period?: "today" | "forecast";
   data: CombinedPoint[];
   historicalRange: PriceRange | null;
   productionHorizon?: string | null;
 }) {
   const [showUncertainty, setShowUncertainty] = useState(true);
+  const hasPredictions = data.some((point) => point.predicted != null);
+  const title = period === "today" ? "Elprisen i dag" : "De næste 7 dage";
+  const axisTimeFormat = period === "today" ? { hour: "2-digit", minute: "2-digit" } as const : AXIS_TIME_FORMAT;
 
-  if (!data.length) {
+  if (!data.some((point) => point.actual != null || point.predicted != null)) {
     return (
       <div className="forecast-chart">
         <h2 className="text-lg font-semibold text-gray-900 mb-2">
-          Prisprognose
+          {title}
         </h2>
         <p className="text-sm text-gray-400">
           Ingen prisdata tilgængelig endnu. Data vises når indsamlingen er
@@ -79,8 +84,8 @@ export default function PriceChart({
   return (
     <div className="forecast-chart">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
-        <div><h2 className="text-lg font-semibold text-gray-900">De næste 7 dage</h2><p className="chart-description">Kendte spotpriser og forventet prisudvikling</p></div>
-        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+        <div><h2 className="text-lg font-semibold text-gray-900">{title}</h2><p className="chart-description">{period === "today" ? "Dagens spotpriser, fra midnat til midnat" : "Kendte spotpriser og forventet prisudvikling"}</p></div>
+        {(period === "forecast" || hasPredictions) && <label className="inline-flex items-center gap-2 cursor-pointer select-none">
           <span
             aria-hidden
             className={`h-2.5 w-2.5 rounded-full transition-colors ${
@@ -105,12 +110,12 @@ export default function PriceChart({
               }`}
             />
           </button>
-        </label>
+        </label>}
       </div>
-      <PriceHistorySummary range={historicalRange} />
+      {period === "forecast" && <PriceHistorySummary range={historicalRange} />}
       {hasMissingPrices && (
         <p role="status" className="text-sm text-amber-700 mb-4">
-          Prognosen dækker endnu ikke alle de næste 7 dage. Manglende priser vises som huller.
+          {period === "today" ? "Der mangler priser for dele af i dag." : "Prognosen dækker endnu ikke alle de næste 7 dage."} Manglende priser vises som huller.
         </p>
       )}
       <div className="forecast-plot">
@@ -122,7 +127,7 @@ export default function PriceChart({
             <CartesianGrid vertical={false} stroke="#dfe8ee" />
             <XAxis
               dataKey="ts"
-              tickFormatter={(ts: string) => formatCopenhagenDateTime(ts, AXIS_TIME_FORMAT)}
+              tickFormatter={(ts: string) => formatCopenhagenDateTime(ts, axisTimeFormat)}
               tick={{ fill: "#657c8a", fontSize: 11 }}
               interval="preserveStartEnd"
               minTickGap={40}
@@ -195,7 +200,7 @@ export default function PriceChart({
                 }}
               />
             )}
-            {nowTimestamp && nowTimestamp !== cutoffTimestamp && (
+            {nowTimestamp && (period === "today" || nowTimestamp !== cutoffTimestamp) && (
               <ReferenceLine
                 x={nowTimestamp}
                 stroke="#d1d5db"
@@ -209,7 +214,7 @@ export default function PriceChart({
                 }}
               />
             )}
-            {cutoffTimestamp && (
+            {period === "forecast" && cutoffTimestamp && (
               <ReferenceLine
                 x={cutoffTimestamp}
                 stroke="#d1d5db"
@@ -237,7 +242,7 @@ export default function PriceChart({
                 }}
               />
             )}
-            {showUncertainty && (
+            {showUncertainty && (period === "forecast" || hasPredictions) && (
               <Area
                 isAnimationActive={false}
                 type="monotone"
@@ -257,7 +262,7 @@ export default function PriceChart({
               strokeWidth={2.5}
               dot={false}
             />
-            <Line
+            {(period === "forecast" || hasPredictions) && <Line
               isAnimationActive={false}
               type="monotone"
               dataKey="predicted"
@@ -266,7 +271,7 @@ export default function PriceChart({
               strokeWidth={2.5}
               strokeDasharray="6 3"
               dot={false}
-            />
+            />}
           </ComposedChart>
         </ResponsiveContainer>
       </div>

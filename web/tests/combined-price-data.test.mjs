@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCombinedData, priceChartWindow } from "../lib/combined-price-data.ts";
 
+import { todayInCopenhagen } from "../lib/copenhagen-time.ts";
+
 const now = new Date("2026-11-03T18:08:37Z");
 const prices = (entries) => ({
   area: "DK1",
@@ -77,3 +79,23 @@ test("the window advances with time and keeps 168 hours across a clock change", 
   assert.equal(after.start - before.start, 24 * 3600_000);
   assert.equal(after.end - before.end, 24 * 3600_000);
 });
+
+for (const [label, instant, start, end, count] of [
+  ["winter", "2026-11-07T11:00:00Z", "2026-11-06T23:00:00.000Z", "2026-11-07T22:45:00.000Z", 96],
+  ["summer", "2026-07-07T11:00:00Z", "2026-07-06T22:00:00.000Z", "2026-07-07T21:45:00.000Z", 96],
+  ["spring clock change", "2026-03-29T11:00:00Z", "2026-03-28T23:00:00.000Z", "2026-03-29T21:45:00.000Z", 92],
+  ["autumn clock change", "2026-10-25T11:00:00Z", "2026-10-24T22:00:00.000Z", "2026-10-25T22:45:00.000Z", 100],
+]) {
+  test(`today includes the whole Copenhagen calendar day: ${label}`, () => {
+    const now = new Date(instant);
+    const today = todayInCopenhagen(now);
+    const data = buildCombinedData(prices([[start, 0]]), forecast([start, end]), now, { start: today.start, end: today.end - 1 });
+    assert.equal(data.length, count);
+    assert.equal(data[0].ts, start);
+    assert.equal(data[0].actual, 0);
+    assert.equal(data[0].predicted, undefined);
+    assert.equal(data.at(-1).ts, end);
+    assert.equal(data.at(-1).predicted, 0.5);
+    assert.equal(pricedPoints(data).length, 2);
+  });
+}
