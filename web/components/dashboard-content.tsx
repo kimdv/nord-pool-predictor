@@ -110,9 +110,9 @@ export default function DashboardContent({
       </section>
 
       <section id="prisoverblik" aria-label="Prisoverblik">
-        <AreaCharts area={selected} refreshVersion={refreshVersion} onForecast={handleForecast} overview={overview}>
+        <AreaCharts area={selected} refreshVersion={refreshVersion} onForecast={handleForecast} overview={overview} todayChart={
           <PriceBreakdownChart area={selected} gln={gridSelection?.gln ?? null} code={gridSelection?.code ?? null} refreshVersion={refreshVersion} />
-        </AreaCharts>
+        } />
       </section>
 
       <section id="datakilder" className="data-section" aria-label="Datakilder og opdateringer">

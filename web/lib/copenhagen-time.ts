@@ -15,9 +15,9 @@ function calendarParts(date: Date): Record<string, number> {
   return Object.fromEntries(calendarFormatter.formatToParts(date).map(({ type, value }) => [type, Number(value)]));
 }
 
-function midnightInCopenhagen(now: Date, dayOffset: number): number {
+export function endOfTomorrowInCopenhagen(now = new Date()): string {
   const today = calendarParts(now);
-  const midnight = Date.UTC(today.year, today.month - 1, today.day + dayOffset);
+  const midnight = Date.UTC(today.year, today.month - 1, today.day + 2);
   let instant = midnight;
 
   // Convert the calendar midnight to UTC using the offset on that date.
@@ -29,15 +29,7 @@ function midnightInCopenhagen(now: Date, dayOffset: number): number {
     instant = next;
   }
 
-  return instant;
-}
-
-export function todayInCopenhagen(now = new Date()) {
-  return { start: midnightInCopenhagen(now, 0), end: midnightInCopenhagen(now, 1) };
-}
-
-export function endOfTomorrowInCopenhagen(now = new Date()): string {
-  return new Date(midnightInCopenhagen(now, 2) - 1).toISOString();
+  return new Date(instant - 1).toISOString();
 }
 
 const defaultOptions: Intl.DateTimeFormatOptions = {

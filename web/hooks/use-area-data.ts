@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { todayInCopenhagen } from "@/lib/copenhagen-time";
 import { fetchJson, fetchOptionalJson } from "@/lib/client-api";
 import { buildCombinedData, priceChartWindow, type CombinedPoint } from "@/lib/combined-price-data";
 import { historicalRange, historyWindow, type PriceRange } from "@/lib/price-history";
@@ -17,7 +16,6 @@ export type { CombinedPoint } from "@/lib/combined-price-data";
 
 export interface AreaDetailData {
   combined: CombinedPoint[];
-  today: CombinedPoint[];
   historicalRange: PriceRange | null;
   forecast: ForecastResponse | null;
   productionHorizon: string | null;
@@ -53,7 +51,6 @@ export function useAreaData(area: AreaCode, refreshVersion = 0) {
     async function load() {
       const now = new Date();
       const window = priceChartWindow(now);
-      const today = todayInCopenhagen(now);
       const history = historyWindow(now);
       const start = new Date(history.start).toISOString();
       const end = new Date(window.end).toISOString();
@@ -88,7 +85,6 @@ export function useAreaData(area: AreaCode, refreshVersion = 0) {
         return {
           prices: nextPrices,
           combined: buildCombinedData(nextPrices, nextForecast, now),
-          today: buildCombinedData(nextPrices, nextForecast, now, { start: today.start, end: today.end - 1 }),
           historicalRange: historicalRange((nextPrices?.prices ?? []).map((point) => ({
             ts: point.ts, value: point.price_dkk_kwh,
           })), history.end),

@@ -82,43 +82,24 @@ beforeEach(async () => {
 
 afterEach(() => assert.deepEqual(runtimeErrors, []));
 
-test("today stays beside the current price with the seven-day forecast below", async () => {
-  await page.clock.setFixedTime(new Date("2026-11-07T11:00:00Z"));
-  await page.route("**/api/backend/prices/**", (route) => route.fulfill({ json: {
-    area: "DK1", prices: Array.from({ length: 192 }, (_, i) => ({
-      ts: new Date(Date.parse("2026-11-06T23:00:00Z") + i * 900_000).toISOString(),
-      price_dkk_kwh: 1 + Math.sin(i / 10) * 0.5,
-    })),
-  } }));
-  await page.route("**/api/backend/forecasts/DK1/latest", (route) => route.fulfill({ json: {
-    values: Array.from({ length: 768 }, (_, i) => ({
-      ts: new Date(Date.parse("2026-11-07T11:00:00Z") + i * 900_000).toISOString(),
-      predicted_price_dkk_kwh: 1, lower_dkk_kwh: 0.7, upper_dkk_kwh: 1.3,
-    })),
-  } }));
-  await page.reload();
+test("today's stacked breakdown stays beside the current price with the forecast below", async () => {
+  await page.getByRole("button", { name: "Vælg netselskab" }).click();
+  await page.getByRole("button", { name: "En tarif", exact: true }).click();
   const today = page.locator(".price-stage .forecast-chart");
-  await today.getByRole("heading", { name: "Elprisen i dag", exact: true }).waitFor();
-  await today.locator(".recharts-line-curve").first().waitFor();
-  const axisTicks = today.locator(".recharts-xAxis-tick-labels text");
-  await axisTicks.first().waitFor();
-  const ticks = await axisTicks.allTextContents();
-  assert.equal(ticks[0], "00.00");
-  assert.equal(ticks.at(-1), "23.45");
+  await today.getByRole("heading", { name: "Elpriser i dag", exact: true }).waitFor();
+  await today.locator(".recharts-bar-rectangle").first().waitFor();
+  assert.equal(await today.locator(".recharts-line").count(), 0);
+  for (const name of ["Spotpris", "Nettarif", "Transport", "Elafgift", "Moms (25%)"]) {
+    assert.equal(await today.getByRole("button", { name, exact: true }).getAttribute("aria-pressed"), "true");
+  }
+  await today.getByRole("button", { name: "Nettarif", exact: true }).click();
+  assert.equal(await today.getByRole("button", { name: "Nettarif", exact: true }).getAttribute("aria-pressed"), "false");
+  assert.equal(await page.getByRole("heading", { name: "Elpriser i dag", exact: true }).count(), 1);
   const forecast = page.getByRole("region", { name: "Syvdagesprognose" });
   await forecast.getByRole("heading", { name: "De næste 7 dage" }).waitFor();
   assert.equal(await forecast.evaluate((el) => el.previousElementSibling?.classList.contains("price-stage")), true);
-  assert.equal(await today.getByRole("switch").count(), 0);
-  await forecast.getByRole("switch").click();
-  assert.equal(await forecast.getByRole("switch").getAttribute("aria-checked"), "false");
-  await page.clock.setFixedTime(new Date("2026-11-07T22:45:00Z"));
-  await page.reload();
-  await today.getByText("Nu", { exact: true }).waitFor();
-  assert.equal(await today.getByText("Kendte priser ▸", { exact: true }).count(), 0);
-  await page.setViewportSize({ width: 1440, height: 1100 });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, null, { timeout: 5000 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 });
 
 test("the analysis navigation target stays available while area data loads", async () => {
@@ -148,7 +129,7 @@ test("forecast accuracy is secondary, below the breakdown, and collapsed by defa
   await summary.waitFor();
   assert.equal(await analysis.evaluate((el) => el.open), false);
   assert.equal(await page.getByText("Ingen nøjagtighedsdata tilgængelig endnu.").isVisible(), false);
-  assert.equal(await analysis.evaluate((el) => el.previousElementSibling?.classList.contains("tariff-empty")), true);
+  assert.equal(await analysis.evaluate((el) => el.previousElementSibling?.getAttribute("aria-label") === "Syvdagesprognose"), true);
   assert.equal(await summary.evaluate((el) => getComputedStyle(el).fontSize), "13px");
   await summary.focus();
   await page.keyboard.press("Enter");

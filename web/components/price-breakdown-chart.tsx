@@ -175,7 +175,7 @@ export default function PriceBreakdownChart({
 
   if (!gln || !code) {
     return (
-      <div className="card tariff-empty p-6">
+      <div className="forecast-chart tariff-empty">
         <h2 className="text-lg font-semibold text-gray-900 mb-2">
           Elpriser i dag
         </h2>
@@ -196,7 +196,7 @@ export default function PriceBreakdownChart({
 
   if (!data || data.length === 0) {
     return (
-      <div className="card p-6">
+      <div className="forecast-chart">
         <h2 className="text-lg font-semibold text-gray-900 mb-2">
           Elpriser i dag
         </h2>
@@ -206,7 +206,7 @@ export default function PriceBreakdownChart({
   }
 
   return (
-    <div className="card p-6">
+    <div className="forecast-chart">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
         <h2 className="text-lg font-semibold text-gray-900">Elpriser i dag</h2>
         <div className="flex flex-wrap gap-2">

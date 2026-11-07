@@ -15,10 +15,10 @@ export default function AreaCharts({
   refreshVersion = 0,
   onForecast,
   overview,
-  children,
+  todayChart,
 }: {
   overview: ReactNode;
-  children: ReactNode;
+  todayChart: ReactNode;
   area: AreaCode;
   refreshVersion?: number;
   onForecast?: (forecast: ForecastResponse | null) => void;
@@ -35,10 +35,9 @@ export default function AreaCharts({
       <div className="space-y-8" aria-busy="true" aria-label="Henter prisdata">
         <div className="price-stage">
           {overview}
-          <div className="forecast-panel"><ChartSkeleton height="h-96" /></div>
+          <div className="forecast-panel">{todayChart}</div>
         </div>
         <section className="card p-6" aria-label="Syvdagesprognose"><ChartSkeleton height="h-96" /></section>
-        {children}
         <details id="analyse" className="forecast-analysis">
           <summary>Prognosens præcision</summary>
           <ChartSkeleton height="h-48" />
@@ -51,24 +50,12 @@ export default function AreaCharts({
     <div className="space-y-6" aria-busy={loading}>
       <div className="price-stage">
         {overview}
-        <div className="forecast-panel">
-          {(errors.prices || errors.forecast) && (
-            <RequestError
-              message={[errors.prices, errors.forecast].filter(Boolean).join(" ")}
-              onRetry={retry}
-              retrying={loading}
-            />
-          )}
-          {(!(errors.prices || errors.forecast) || data.today.length > 0) && (
-            <PriceChart data={data.today} period="today" historicalRange={null} />
-          )}
-        </div>
+        <div className="forecast-panel">{todayChart}</div>
       </div>
       <section className="card p-6" aria-label="Syvdagesprognose">
-        {errors.forecast && <RequestError message={errors.forecast} onRetry={retry} retrying={loading} />}
+        {(errors.prices || errors.forecast) && <RequestError message={[errors.prices, errors.forecast].filter(Boolean).join(" ")} onRetry={retry} retrying={loading} />}
         <PriceChart data={data.combined} productionHorizon={data.productionHorizon} historicalRange={data.historicalRange} />
       </section>
-      {children}
       <details id="analyse" className="forecast-analysis">
         <summary>Prognosens præcision</summary>
         <div className="analysis-grid">
