@@ -200,7 +200,7 @@ export default function PriceChart({
                 }}
               />
             )}
-            {nowTimestamp && nowTimestamp !== cutoffTimestamp && (
+            {nowTimestamp && (period === "today" || nowTimestamp !== cutoffTimestamp) && (
               <ReferenceLine
                 x={nowTimestamp}
                 stroke="#d1d5db"

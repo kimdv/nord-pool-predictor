@@ -108,6 +108,10 @@ test("today stays beside the current price with the seven-day forecast below", a
   assert.equal(await today.getByRole("switch").count(), 0);
   await forecast.getByRole("switch").click();
   assert.equal(await forecast.getByRole("switch").getAttribute("aria-checked"), "false");
+  await page.clock.setFixedTime(new Date("2026-11-07T22:45:00Z"));
+  await page.reload();
+  await today.getByText("Nu", { exact: true }).waitFor();
+  assert.equal(await today.getByText("Kendte priser ▸", { exact: true }).count(), 0);
   await page.setViewportSize({ width: 1440, height: 1100 });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, null, { timeout: 5000 });
