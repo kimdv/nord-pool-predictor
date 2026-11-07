@@ -255,10 +255,9 @@ test("signals during a refresh produce only one trailing refresh", async () => {
   price = 0.8;
   await resumeTab();
   await page.waitForFunction(() => document.querySelector(".today-summary")?.getAttribute("aria-busy") === "true");
-  const trailingResponse = page.waitForResponse((response) =>
-    new URL(response.url()).pathname === "/" && haRequests - before === 2);
+  await page.exposeFunction("haRequestCount", () => haRequests - before);
   await resumeTab(3);
-  await trailingResponse;
+  await page.waitForFunction(async () => await window.haRequestCount() === 2);
   await page.locator(".current-price-value").filter({ hasText: "0.80" }).waitFor();
   await page.waitForFunction(() => document.querySelector(".today-summary")?.getAttribute("aria-busy") === "false");
   assert.equal(haRequests - before, 2);
