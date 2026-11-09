@@ -7,3 +7,9 @@ CREATE TABLE demand_forecasts (
     source TEXT NOT NULL,
     PRIMARY KEY (area, ts, issued_at, source)
 );
+
+ALTER TABLE job_runs DROP CONSTRAINT job_runs_job_type_check;
+ALTER TABLE job_runs ADD CONSTRAINT job_runs_job_type_check CHECK (job_type IN (
+    'ingest_prices', 'ingest_weather', 'ingest_production', 'ingest_crossborder',
+    'refresh_forecast', 'retrain_model', 'score_forecasts', 'cleanup', 'ingest_demand'
+));

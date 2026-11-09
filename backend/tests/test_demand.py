@@ -160,6 +160,25 @@ async def test_demand_outage_does_not_stop_price_forecasts(test_settings):
     forecasts.assert_awaited_once()
 
 
+async def test_refresh_records_demand_job_before_collecting(database, test_settings):
+    test_settings.entsoe_api_token = SecretStr("test-token")
+    collect = AsyncMock()
+    with (
+        patch.object(jobs, "get_settings", return_value=test_settings),
+        patch.object(demand, "ingest_demand_forecasts", collect),
+        patch.object(jobs, "_run_area_jobs", AsyncMock()),
+    ):
+        await jobs.job_refresh_forecast()
+    collect.assert_awaited_once()
+    async with database.connect() as conn:
+        status = (
+            await conn.execute(
+                text("SELECT status FROM job_runs WHERE job_type = 'ingest_demand'")
+            )
+        ).scalar_one()
+    assert status == "completed"
+
+
 async def test_ingestion_preserves_earlier_vintages(database, test_settings):
     test_settings.entsoe_api_token = SecretStr("test-token")
     test_settings.areas.pop("DK2")
