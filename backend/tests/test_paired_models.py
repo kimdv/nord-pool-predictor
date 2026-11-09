@@ -101,6 +101,7 @@ def test_short_training_resamples_every_target_instead_of_filtering_long_rows():
             "add_weather_features",
             "add_production_features",
             "add_crossborder_features",
+            "add_demand_features",
             "add_cross_features",
             "add_residual_load_features",
         ):

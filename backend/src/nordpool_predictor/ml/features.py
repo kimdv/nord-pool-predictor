@@ -122,6 +122,7 @@ def build_feature_matrix(
     df = add_production_features(df, area, issued_at=cutoffs)
     production_provenance = df.attrs.get("production_provenance", {})
     df = add_crossborder_features(df, area, issued_at=cutoffs)
+    df = add_demand_features(df, area, issued_at=cutoffs)
     df = add_cross_features(df)
     df = add_residual_load_features(df)
     df = apply_horizon_features(df, horizons)
@@ -232,6 +233,13 @@ def add_crossborder_features(
     return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "crossborder")
 
 
+def add_demand_features(
+    df: pd.DataFrame, area: str, *, issued_at: datetime | pd.Series
+) -> pd.DataFrame:
+    """Day-ahead demand forecasts first received no later than issuance."""
+    return load_asof_covariates(_get_sync_engine(), df, area, issued_at, "demand")
+
+
 # ---------------------------------------------------------------------------
 # Cross (interaction) features
 # ---------------------------------------------------------------------------
@@ -252,7 +260,7 @@ def add_cross_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_residual_load_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Derived renewable-supply features."""
+    """Renewable supply and forecast demand left after wind and solar."""
     wind = df.get("wind_mw")
     solar = df.get("solar_mw")
 
@@ -260,6 +268,9 @@ def add_residual_load_features(df: pd.DataFrame) -> pd.DataFrame:
         w = wind.fillna(0) if wind is not None else pd.Series(0, index=df.index)
         s = solar.fillna(0) if solar is not None else pd.Series(0, index=df.index)
         df["total_renewable_mw"] = w + s
+
+    if {"load_mw", "wind_mw", "solar_mw"}.issubset(df.columns):
+        df["residual_load_mw"] = df["load_mw"] - df["wind_mw"] - df["solar_mw"]
 
     return df
 

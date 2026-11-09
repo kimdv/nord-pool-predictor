@@ -17,6 +17,7 @@ from nordpool_predictor.ml.features import (
     add_calendar_features,
     add_cross_features,
     add_crossborder_features,
+    add_demand_features,
     add_issuance_price_features,
     add_price_lag_features,
     add_production_features,
@@ -128,6 +129,7 @@ def _build_forecast_features(
     df = add_weather_features(df, area, issued_at=now)
     df = add_production_features(df, area, issued_at=now)
     df = add_crossborder_features(df, area, issued_at=now)
+    df = add_demand_features(df, area, issued_at=now)
     df = add_cross_features(df)
     df = add_residual_load_features(df)
 

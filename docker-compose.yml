@@ -66,6 +66,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${NORDPOOL_DB_USER:-nordpool}:${NORDPOOL_DB_PASSWORD:-nordpool}@postgres:5432/nordpool
       MODEL_DIR: /data/models
+      ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN:-}
     volumes:
       - models:/data/models
     networks:

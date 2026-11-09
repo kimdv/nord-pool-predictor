@@ -207,6 +207,11 @@ def _train_sync(
 
     metrics = {
         "production_data": production_training_metrics(df),
+        "demand_data": {
+            column: float(df[column].notna().mean())
+            for column in ("load_mw", "residual_load_mw")
+            if column in df
+        },
         "mae": mae,
         "rmse": rmse,
         "bias": bias,

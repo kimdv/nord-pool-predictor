@@ -132,6 +132,10 @@ async def bootstrap() -> None:
             return False
         return True
 
+    from nordpool_predictor.ingestion.demand import ingest_demand_forecasts
+
+    await attempt("demand forecasts", ingest_demand_forecasts)
+
     shared_history_ready = True
     price_history_ready = True
     price_window_fetched_until: datetime | None = None

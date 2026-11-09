@@ -152,8 +152,15 @@ async def _run_area_jobs(job_type: str, operation: Any) -> None:
 
 
 async def job_refresh_forecast() -> None:
+    from nordpool_predictor.ingestion.demand import ingest_demand_forecasts
     from nordpool_predictor.ml.predict import run_forecast
 
+    # Optional demand feed failures must not suppress the existing price forecast.
+    if get_settings().entsoe_api_token.get_secret_value():
+        try:
+            await _run_job("ingest_demand", ingest_demand_forecasts)
+        except Exception:
+            logger.exception("Demand ingestion failed; continuing with available model inputs")
     await _run_area_jobs("refresh_forecast", run_forecast)
 
 
@@ -183,6 +190,7 @@ async def job_cleanup() -> None:
             ("weather_forecasts", "issued_at", settings.retention_weather_fc_days),
             ("production_observations", "ts", settings.retention_production_days),
             ("production_forecasts", "issued_at", settings.retention_production_days),
+            ("demand_forecasts", "issued_at", settings.retention_production_days),
             ("crossborder_observations", "ts", settings.retention_crossborder_days),
             ("crossborder_forecasts", "issued_at", settings.retention_crossborder_days),
             # Delete the parent: values, errors, metrics and baselines cascade together.
