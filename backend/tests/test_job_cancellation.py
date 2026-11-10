@@ -131,22 +131,26 @@ async def test_cancellation_finalizes_only_its_unfinished_forecasts(database, jo
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
-async def test_request_finalization_recovers_history_without_relabeling_old_runs(database, status):
+@pytest.mark.parametrize("job_type", ["refresh_forecast", "ingest_demand"])
+async def test_request_finalization_recovers_history_without_relabeling_old_runs(
+    database, status, job_type
+):
     from nordpool_predictor.scheduler import jobs
 
     async with database.begin() as conn:
         await conn.execute(
             text("""
             INSERT INTO job_runs (job_type, status, created_at)
-            VALUES ('refresh_forecast', 'running', NOW() - interval '1 day'),
-                   ('refresh_forecast', 'running', NOW() + interval '1 day')
-        """)
+            VALUES (:job_type, 'running', NOW() - interval '1 day'),
+                   (:job_type, 'running', NOW() + interval '1 day')
+        """),
+            {"job_type": job_type},
         )
     job_id = await enqueue_job("refresh_forecast")
     await claim_job()
     # A suppressed history-write failure leaves a successful area's row running.
     with patch.object(jobs, "_finish_job", AsyncMock()):
-        await jobs._run_job("refresh_forecast", AsyncMock())
+        await jobs._run_job(job_type, AsyncMock())
     if status == "cancelled":
         await cancel_job("refresh_forecast")
     await finish_request(job_id, "Job failed" if status == "failed" else None)
@@ -156,7 +160,11 @@ async def test_request_finalization_recovers_history_without_relabeling_old_runs
                 text("SELECT status, finished_at FROM job_runs ORDER BY created_at")
             )
         ).all()
-        assert [row.status for row in rows] == ["failed", status, "running"]
-        assert rows[0].finished_at is not None
+        assert [row.status for row in rows] == [
+            "failed" if job_type == "refresh_forecast" else "running",
+            status,
+            "running",
+        ]
+        assert (rows[0].finished_at is not None) == (job_type == "refresh_forecast")
         assert rows[1].finished_at is not None
         assert rows[2].finished_at is None

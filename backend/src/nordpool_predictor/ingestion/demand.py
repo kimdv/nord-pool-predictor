@@ -96,9 +96,12 @@ def _parse_forecast(xml: bytes, area: str, received_at: datetime) -> list[dict]:
             positions = [position for position, _ in points]
             if len(set(positions)) != len(positions):
                 raise ValueError("Duplicate ENTSO-E forecast position")
+            if any(
+                not 1 <= position <= steps or not math.isfinite(value) or value < 0
+                for position, value in points
+            ):
+                raise ValueError("Invalid ENTSO-E demand forecast value or position")
             for i, (position, value) in enumerate(points):
-                if not 1 <= position <= steps or not math.isfinite(value) or value < 0:
-                    raise ValueError("Invalid ENTSO-E demand forecast value or position")
                 stop = points[i + 1][0] if curve == "A03" and i + 1 < len(points) else steps + 1
                 if curve == "A01":
                     stop = position + 1
@@ -122,6 +125,45 @@ def _parse_forecast(xml: bytes, area: str, received_at: datetime) -> list[dict]:
     return [rows[ts] for ts in sorted(rows)]
 
 
+async def _ingest_area(
+    client: httpx.AsyncClient, token: str, area: str, start: datetime, end: datetime
+) -> None:
+    document = _request_document(area, start, end)
+    for attempt in range(3):
+        try:
+            response = await client.post(
+                API_URL,
+                content=document,
+                headers={"Content-Type": "application/xml", "SECURITY_TOKEN": token},
+            )
+            response.raise_for_status()
+            break
+        except httpx.HTTPStatusError, httpx.TransportError:
+            if attempt == 2:
+                raise RuntimeError(f"ENTSO-E demand request failed for {area}") from None
+            await asyncio.sleep(2 ** (attempt + 1))
+    received_at = datetime.now(UTC)
+    rows = [
+        row
+        for row in _parse_forecast(response.content, area, received_at)
+        if start <= row["ts"] < end and row["ts"] >= received_at
+    ]
+    if not rows:
+        raise ValueError(f"No future ENTSO-E demand forecasts returned for {area}")
+    async with get_session() as session:
+        await session.execute(
+            text("""
+                INSERT INTO demand_forecasts
+                    (area, ts, issued_at, source_issued_at, load_mw, source)
+                VALUES (:area, :ts, :issued_at, :source_issued_at, :load_mw, :source)
+                ON CONFLICT DO NOTHING
+            """),
+            rows,
+        )
+        await session.commit()
+    logger.info("Captured %d demand forecast quarters for %s", len(rows), area)
+
+
 async def ingest_demand_forecasts() -> None:
     settings = get_settings()
     token = settings.entsoe_api_token.get_secret_value()
@@ -130,39 +172,13 @@ async def ingest_demand_forecasts() -> None:
         return
     start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=2)
+    failed = []
     async with httpx.AsyncClient(timeout=60) as client:
         for area in settings.area_codes:
-            document = _request_document(area, start, end)
-            for attempt in range(3):
-                try:
-                    response = await client.post(
-                        API_URL,
-                        content=document,
-                        headers={"Content-Type": "application/xml", "SECURITY_TOKEN": token},
-                    )
-                    response.raise_for_status()
-                    break
-                except httpx.HTTPStatusError, httpx.TransportError:
-                    if attempt == 2:
-                        raise RuntimeError(f"ENTSO-E demand request failed for {area}") from None
-                    await asyncio.sleep(2 ** (attempt + 1))
-            received_at = datetime.now(UTC)
-            rows = [
-                row
-                for row in _parse_forecast(response.content, area, received_at)
-                if start <= row["ts"] < end and row["ts"] >= received_at
-            ]
-            if not rows:
-                raise ValueError(f"No future ENTSO-E demand forecasts returned for {area}")
-            async with get_session() as session:
-                await session.execute(
-                    text("""
-                        INSERT INTO demand_forecasts
-                            (area, ts, issued_at, source_issued_at, load_mw, source)
-                        VALUES (:area, :ts, :issued_at, :source_issued_at, :load_mw, :source)
-                        ON CONFLICT DO NOTHING
-                    """),
-                    rows,
-                )
-                await session.commit()
-            logger.info("Captured %d demand forecast quarters for %s", len(rows), area)
+            try:
+                await _ingest_area(client, token, area, start, end)
+            except Exception:
+                logger.exception("Demand collection failed for %s", area)
+                failed.append(area)
+    if failed:
+        raise RuntimeError(f"Demand ingestion failed for areas: {', '.join(failed)}")

@@ -59,6 +59,16 @@ def test_variable_blocks_extend_to_next_position_and_period_end():
     assert [row["load_mw"] for row in rows] == [100] * 8 + [200] * 4
 
 
+def test_all_variable_block_points_are_validated_before_any_expansion():
+    xml = forecast_xml(curve="A03").replace(b"<position>3", b"<position>2147483647")
+    with patch.object(
+        demand, "range", create=True, side_effect=AssertionError("expanded")
+    ) as expand:
+        with pytest.raises(ValueError, match="position"):
+            demand._parse_forecast(xml, "DK1", RECEIVED)
+    expand.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "before,after",
     [
@@ -145,6 +155,41 @@ async def test_ingestion_uses_header_auth_and_receipt_time(test_settings, mock_d
     assert session.commit.await_count == 2
     for call in session.execute.call_args_list:
         assert all(row["issued_at"] == RECEIVED for row in call.args[1])
+
+
+@pytest.mark.parametrize("failure", ["request", "parse", "no-future-data"])
+async def test_failed_area_does_not_block_healthy_area(test_settings, mock_db_session, failure):
+    test_settings.entsoe_api_token = SecretStr("test-token")
+    factory, session = mock_db_session
+    requested = []
+
+    def serve(request):
+        area = "DK1" if demand.DOMAINS["DK1"].encode() in request.content else "DK2"
+        requested.append(area)
+        if area == "DK1":
+            if failure == "request":
+                return httpx.Response(503)
+            if failure == "parse":
+                return httpx.Response(200, content=b"<Acknowledgement_MarketDocument/>")
+            return httpx.Response(
+                200, content=forecast_xml().replace(b"2026-01-02", b"2026-01-01")
+            )
+        return httpx.Response(200, content=forecast_xml(area))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(serve))
+    with (
+        time_machine.travel(RECEIVED, tick=False),
+        patch.object(demand, "get_settings", return_value=test_settings),
+        patch.object(demand, "get_session", factory),
+        patch.object(demand.httpx, "AsyncClient", return_value=client),
+        patch.object(demand.asyncio, "sleep", AsyncMock()),
+    ):
+        with pytest.raises(RuntimeError, match="failed for areas: DK1"):
+            await demand.ingest_demand_forecasts()
+    assert "DK1" in requested and "DK2" in requested
+    session.execute.assert_awaited_once()
+    assert all(row["area"] == "DK2" for row in session.execute.call_args.args[1])
+    session.commit.assert_awaited_once()
 
 
 async def test_demand_outage_does_not_stop_price_forecasts(test_settings):

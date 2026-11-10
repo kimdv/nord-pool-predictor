@@ -98,6 +98,8 @@ async def finish_request(job_id: UUID, error: str | None = None) -> None:
                         finished_at = NOW()
                     WHERE status = 'running' AND created_at <= :finished_at AND (
                         job_type = :name OR (:name = 'bootstrap' AND created_at >= :started_at)
+                        OR (:name = 'refresh_forecast' AND job_type = 'ingest_demand'
+                            AND created_at >= :started_at)
                     )
                 """),
                 {
