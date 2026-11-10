@@ -23,7 +23,7 @@
     "@types/node": "^26.6.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.3.0",
-    "@tailwindcss/postcss": "^4.3.3",
+    "@tailwindcss/postcss": "^4.3.5",
     "@next/eslint-plugin-next": "^16.4.3",
     "eslint": "^10.14.0",
     "globals": "^17.13.0",
