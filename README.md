@@ -350,6 +350,36 @@ Earlier models, including `v3-copenhagen` models with forecast-only cross-border
 inputs, are excluded; worker bootstrap retrains them before generating new forecasts. Historical models
 and forecasts remain stored.
 
+### Demand forecasts and residual load
+
+Set `ENTSOE_API_TOKEN` in the Compose environment to collect separate DK1/DK2
+day-ahead total load forecasts (ENTSO-E article 6.1.b, A65/A01). Obtain a token via
+the [official access instructions](https://transparencyplatform.zendesk.com/hc/en-us/articles/12845911031188-How-to-get-security-token).
+The request follows ENTSO-E's [POST example](https://transparencyplatform.zendesk.com/hc/en-us/articles/15696643163924-Request-Methods)
+and [bidding-zone EIC list](https://transparencyplatform.zendesk.com/hc/en-us/articles/15885757676308-Area-List-with-Energy-Identification-Code-EIC).
+The worker collects them at bootstrap and before each forecast refresh. The token
+travels in the POST request header, not a logged URL. With no token configured,
+collection is disabled; a failed feed is recorded without blocking price forecasts.
+
+Forecasts are stored as immutable, quarter-hour MW snapshots. Hourly and half-hourly
+intervals are expanded without interpolation; missing blocks remain missing.
+Availability is the receipt time, not the document creation time. Training and
+inference use the latest snapshot received by issuance, and add `load_mw` and
+`residual_load_mw = load_mw - wind_mw - solar_mw`. Residual load is missing if any
+of its three inputs is missing; negative residual load is valid. Forecasts are not
+extrapolated past the provider's horizon. Retention follows `RETENTION_PRODUCTION_DAYS`.
+
+The Energinet `Forecasts_Hour` feed contains wind and solar only. Energy-Charts'
+documented load endpoint is country-level, so national Danish demand is not
+silently assigned to both bidding zones. Neither source supplies verified historical
+DK1/DK2 demand vintages here, so there is no retrospective demand backfill.
+History must accumulate from live collection before these features can help training.
+Existing artifacts retain their own feature columns and are not retrained or
+replaced by this change. Frozen short-term experiments keep their model contracts.
+New training metrics and experiment reports expose demand input coverage. Adding
+inputs is not evidence of improved accuracy: compare forecasts on paired unknown
+targets, by area and horizon, before claiming a gain.
+
 ### Short-term specialist experiment
 
 The worker can compare a separate 48-hour specialist with the existing eight-day

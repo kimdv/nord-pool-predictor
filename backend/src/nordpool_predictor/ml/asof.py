@@ -59,6 +59,11 @@ def load_asof_covariates(
             "AVG(wind_mw) AS wind_mw, AVG(solar_mw) AS solar_mw, "
             "MAX(availability_basis) AS _production_basis"
         )
+    elif kind == "demand":
+        owners = json.dumps([area])
+        table, owner = "demand_forecasts", "area"
+        fields = "load_mw"
+        aggregates = "AVG(load_mw) AS load_mw"
     elif kind == "crossborder":
         connections = {
             connection
@@ -107,6 +112,11 @@ def load_asof_covariates(
 
     # All identifiers above are internal constants. Issuance and target times are bound data.
     availability = "available_at" if kind == "production" else "issued_at"
+    target = (
+        "t.ts"
+        if kind == "demand"
+        else "date_trunc('hour', t.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
+    )
     query = text(f"""
         WITH targets AS (
             SELECT * FROM jsonb_to_recordset(CAST(:targets AS jsonb))
@@ -117,7 +127,7 @@ def load_asof_covariates(
         LEFT JOIN LATERAL (
             SELECT {fields} FROM {table} f
             WHERE f.{owner} = o.id
-              AND f.ts = date_trunc('hour', t.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+              AND f.ts = {target}
               AND f.{availability} <= t.issued_at
             ORDER BY f.{availability} DESC, f.issued_at DESC, f.source LIMIT 1
         ) snapshot ON TRUE
@@ -145,6 +155,7 @@ def load_asof_covariates(
                 "solar_irradiance_mean",
             ],
             "production": ["wind_mw", "solar_mw"],
+            "demand": ["load_mw"],
         }[kind]
         for column in columns:
             df[column] = np.nan
