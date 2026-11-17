@@ -1,4 +1,4 @@
-FROM python:3.14-slim AS builder
+FROM python:3.15-slim AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY scripts/ ./scripts/
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir "."
 
-FROM python:3.14-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 \
